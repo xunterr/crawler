@@ -82,13 +82,6 @@ func main() {
 		return
 	}
 
-	go func() {
-		if err = frontier.Start(); err != nil {
-			log.Fatalln("Failed to start frontier process")
-			return
-		}
-	}()
-
 	dispatcher := NewDispatcher(basicHost, dht, func(url url.URL) {
 		println("putting...")
 		frontier.Put(url)
@@ -106,9 +99,14 @@ func main() {
 		return
 	}
 
-	println("here")
-	for url := range frontier.Results() {
-		log.Println(url.String())
+	for {
+		urls, err := frontier.Get()
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+		log.Println(urls[0].String())
+		dispatcher.Dispatch(urls[0])
 	}
 }
 
@@ -131,24 +129,6 @@ func bootstrapFrom(ctx context.Context, host host.Host, bootstrapNodes []string)
 			}
 		}()
 	}
-}
-
-func echoHandler(s network.Stream) {
-	log.Println("New incoming stream...")
-	buf := bufio.NewReader(s)
-	str, err := buf.ReadString('\n')
-	if err != nil {
-		s.Close()
-	}
-
-	log.Printf("Read: %s", str)
-
-	n, err := s.Write([]byte(str))
-	if err != nil {
-		s.Close()
-	}
-
-	log.Printf("Wrote: %d", n)
 }
 
 func SendMessage(s network.Stream, message []byte) ([]byte, error) {
