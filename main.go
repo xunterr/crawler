@@ -17,6 +17,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/multiformats/go-multiaddr"
+	"github.com/xunterr/crawler/internal/frontier"
 
 	golog "github.com/ipfs/go-log/v2"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
@@ -64,7 +65,6 @@ func main() {
 	}
 
 	if err = dht.Bootstrap(ctx); err != nil {
-		println("here2")
 		log.Fatalln(err)
 		return
 	}
@@ -76,16 +76,13 @@ func main() {
 	}
 
 	time.Sleep(500 * time.Millisecond)
-	frontier, err := NewBfFrontier()
+	frontier, err := frontier.NewBfFrontier()
 	if err != nil {
 		log.Fatalln(err)
 		return
 	}
 
-	dispatcher := NewDispatcher(basicHost, dht, func(url url.URL) {
-		println("putting...")
-		frontier.Put(url)
-	})
+	dispatcher := NewDispatcher(basicHost, dht, frontier.Put)
 
 	parsedUrl, err := url.Parse(*seedUrl)
 	if err != nil {
@@ -100,13 +97,23 @@ func main() {
 	}
 
 	for {
-		urls, err := frontier.Get()
+		url, accessAt, err := frontier.Get()
 		if err != nil {
 			log.Println(err)
-			continue
+			return
 		}
-		log.Println(urls[0].String())
-		dispatcher.Dispatch(urls[0])
+
+		go func() {
+
+			time.Sleep(time.Until(accessAt))
+
+			time.Sleep(250 * time.Millisecond)
+			frontier.Processed(*url.URL, time.Duration(250*time.Millisecond))
+
+			frontier.Put(*url.URL)
+
+			log.Println(url.String())
+		}()
 	}
 }
 

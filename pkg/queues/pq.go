@@ -1,4 +1,4 @@
-package pq
+package queues
 
 import "container/heap"
 

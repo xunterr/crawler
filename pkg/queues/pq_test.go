@@ -1,4 +1,4 @@
-package pq
+package queues
 
 import (
 	"container/heap"
@@ -21,6 +21,6 @@ func TestPq(t *testing.T) {
 
 	val := heap.Pop(&priorityQueue).(*item[int])
 	if val.priority != 1 {
-		panic("Wrong priority")
+		t.Fatalf("Wrong priority")
 	}
 }
