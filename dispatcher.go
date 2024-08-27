@@ -3,16 +3,21 @@ package main
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"log"
 	"net/url"
+	"sync"
+	"time"
 
 	"github.com/ipfs/go-cid"
+	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
-	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/libp2p/go-libp2p/core/protocol"
 	rhost "github.com/libp2p/go-libp2p/p2p/host/routed"
+	"github.com/multiformats/go-multiaddr"
 	mc "github.com/multiformats/go-multicodec"
 	mh "github.com/multiformats/go-multihash"
 )
@@ -25,21 +30,80 @@ type Dispatcher struct {
 	host        *rhost.RoutedHost
 	dht         *dht.IpfsDHT
 	urlCallback UrlDiscoveredCallback
+
+	batches map[peer.ID][]string
+	batchMu sync.Mutex
 }
 
 var NOPUrlDiscoveredCallback UrlDiscoveredCallback = func(url url.URL) {}
 
-func NewDispatcher(host host.Host, dht *dht.IpfsDHT, callback UrlDiscoveredCallback) Dispatcher {
-	d := Dispatcher{
-		host:        rhost.Wrap(host, dht),
+func SetupDispatcher(ctx context.Context, opts []libp2p.Option, callback UrlDiscoveredCallback) (*Dispatcher, error) {
+	basicHost, err := libp2p.New(opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	dht, err := dht.New(ctx, basicHost, dht.Mode(dht.ModeAutoServer))
+	if err != nil {
+		return nil, err
+	}
+
+	d := &Dispatcher{
+		host:        rhost.Wrap(basicHost, dht),
 		dht:         dht,
 		urlCallback: callback,
+		batches:     make(map[peer.ID][]string),
 	}
+
 	d.host.SetStreamHandler(PROTOCOL, d.discoveryHandler)
-	return d
+
+	go d.dispatcherLoop(ctx)
+
+	return d, nil
 }
 
-func (d Dispatcher) discoveryHandler(s network.Stream) {
+func (d *Dispatcher) BootstrapFrom(ctx context.Context, bootstrapNodes []string) error {
+	if err := d.dht.Bootstrap(ctx); err != nil {
+		return err
+	}
+
+	for _, bootstrapNode := range bootstrapNodes {
+		bootstrapMaddr := multiaddr.StringCast(bootstrapNode)
+		bootstrapPeerInfo, err := peer.AddrInfoFromP2pAddr(bootstrapMaddr)
+		if err != nil {
+			log.Printf("Failed to bootstrap from node %s", bootstrapNode)
+			continue
+		}
+
+		go func() {
+			d.host.Peerstore().AddAddrs(bootstrapPeerInfo.ID, bootstrapPeerInfo.Addrs, peerstore.PermanentAddrTTL)
+			if err := d.host.Connect(context.Background(), *bootstrapPeerInfo); err != nil {
+				log.Printf("Failed to connect to node %s", bootstrapPeerInfo.String())
+				return
+			} else {
+				log.Printf("Bootstraped with node %s", bootstrapPeerInfo.ID)
+			}
+		}()
+	}
+
+	return nil
+}
+
+func (d *Dispatcher) GetAddress() ([]multiaddr.Multiaddr, error) {
+	hostAddr, err := multiaddr.NewMultiaddr(fmt.Sprintf("/ipfs/%s", d.host.ID()))
+	if err != nil {
+		return nil, err
+	}
+
+	var addresses []multiaddr.Multiaddr
+	for _, addr := range d.host.Addrs() {
+		addresses = append(addresses, addr.Encapsulate(hostAddr))
+	}
+
+	return addresses, nil
+}
+
+func (d *Dispatcher) discoveryHandler(s network.Stream) {
 	log.Printf("Incoming stream from node %s", s.Conn().RemotePeer().String())
 
 	if d.urlCallback == nil {
@@ -60,8 +124,8 @@ func (d Dispatcher) discoveryHandler(s network.Stream) {
 	}
 }
 
-func (d Dispatcher) Dispatch(url url.URL) error {
-	id, err := calculateCID([]byte(url.Hostname()))
+func (d *Dispatcher) Dispatch(u url.URL) error {
+	id, err := calculateCID([]byte(u.Hostname()))
 	if err != nil {
 		log.Printf("Failed to calculate cid: %s", err.Error()) //codestyle: handling and passing !?
 		return err
@@ -69,24 +133,39 @@ func (d Dispatcher) Dispatch(url url.URL) error {
 
 	providers, err := d.dht.FindProviders(context.Background(), id) //todo: partitioning here
 	if err != nil {
-		log.Printf("Failed to find providers for key %s: %s", id.String(), err)
+		//log.Printf("Failed to find providers for key %s: %s", id.String(), err.Error())
 		return err
 	}
 
 	if len(providers) < 1 {
-		log.Printf("No providers found for CID %s. Providing key...", id.String())
+		//log.Printf("No providers found for CID %s. Providing key...", id.String())
 		d.dht.Provide(context.Background(), id, true)
-		d.urlCallback(url)
-	} else if providers[0].ID == d.host.ID() {
-		d.urlCallback(url)
-	} else {
-		log.Printf("Redirecting key %s to node %s", id.String(), providers[0].ID.String())
-		err := d.writeToNode(context.Background(), providers[0].ID, PROTOCOL, url.String()+"\n")
-		if err != nil {
-			log.Printf("Failed to write to node %s: %s", providers[0].ID.String(), err.Error())
-			return err
-		}
+		d.urlCallback(u)
+		return nil
 	}
+
+	peer := providers[0]
+
+	if peer.ID == d.host.ID() {
+		d.urlCallback(u)
+	} else {
+		//log.Printf("Adding key %s to node %s batch", id.String(), providers[0].ID.String())
+		d.createBatch(peer.ID, u)
+	}
+	return nil
+}
+
+func (d *Dispatcher) createBatch(peer peer.ID, u url.URL) error {
+	d.batchMu.Lock()
+	d.batchMu.Unlock()
+
+	batch, ok := d.batches[peer]
+	if !ok {
+		batch = make([]string, 0)
+	}
+
+	batch = append(batch, u.String())
+	d.batches[peer] = batch
 	return nil
 }
 
@@ -106,7 +185,7 @@ func calculateCID(data []byte) (cid.Cid, error) {
 	return id, nil
 }
 
-func (d Dispatcher) writeToNode(ctx context.Context, peerID peer.ID, protocol protocol.ID, message string) error {
+func (d *Dispatcher) writeToNode(ctx context.Context, peerID peer.ID, protocol protocol.ID, message string) error {
 	s, err := d.host.NewStream(context.Background(), peerID, protocol)
 	if err != nil {
 		return err
@@ -114,6 +193,51 @@ func (d Dispatcher) writeToNode(ctx context.Context, peerID peer.ID, protocol pr
 	_, err = s.Write([]byte(message))
 	if err != nil {
 		return err
+	}
+	return nil
+}
+
+func (d *Dispatcher) dispatcherLoop(ctx context.Context) {
+	t := time.Tick(30 * time.Second)
+
+	for {
+		select {
+		case <-t:
+			d.sendBatches(ctx)
+		case <-ctx.Done():
+			break
+		}
+	}
+}
+
+func (d *Dispatcher) sendBatches(ctx context.Context) {
+	d.batchMu.Lock()
+	defer d.batchMu.Unlock()
+	for k, v := range d.batches {
+		log.Printf("Sending batch to node %s", k)
+
+		err := d.writeBatch(ctx, k, PROTOCOL, v)
+		if err != nil {
+			log.Printf("Failed to write to node %s: %s", k.String(), err.Error())
+			continue
+		}
+
+		d.batches[k] = []string{}
+	}
+}
+
+func (d *Dispatcher) writeBatch(ctx context.Context, peerID peer.ID, protocol protocol.ID, messages []string) error {
+
+	s, err := d.host.NewStream(context.Background(), peerID, protocol)
+	if err != nil {
+		return err
+	}
+
+	for _, m := range messages {
+		_, err = s.Write([]byte(fmt.Sprintf("%s\n", m)))
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }

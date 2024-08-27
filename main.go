@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"crypto/rand"
 	"flag"
@@ -10,17 +9,14 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/libp2p/go-libp2p"
-	"github.com/libp2p/go-libp2p/core/crypto"
-	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/core/peerstore"
-	"github.com/multiformats/go-multiaddr"
-	"github.com/xunterr/crawler/internal/frontier"
+	"sync/atomic"
 
 	golog "github.com/ipfs/go-log/v2"
-	dht "github.com/libp2p/go-libp2p-kad-dht"
+	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/paulbellamy/ratecounter"
+	"github.com/xunterr/crawler/internal/fetcher"
+	"github.com/xunterr/crawler/internal/frontier"
 )
 
 func main() {
@@ -29,9 +25,9 @@ func main() {
 	port := flag.Int("p", 6969, "port number")
 	flag.Parse()
 
-	golog.SetAllLoggers(golog.LevelInfo)
+	golog.SetAllLoggers(golog.LevelError)
+	privKey, _, err := crypto.GenerateKeyPairWithReader(crypto.RSA, 2048, rand.Reader)
 
-	key, _, err := crypto.GenerateKeyPairWithReader(crypto.RSA, 2048, rand.Reader)
 	if err != nil {
 		log.Fatalln(err)
 		return
@@ -39,50 +35,49 @@ func main() {
 
 	opts := []libp2p.Option{
 		libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", *port)),
-		libp2p.Identity(key),
+		libp2p.Identity(privKey),
 		libp2p.DefaultTransports,
 		libp2p.DefaultMuxers,
 		libp2p.DefaultSecurity,
 		libp2p.NATPortMap(),
 	}
 
-	basicHost, err := libp2p.New(opts...)
-	if err != nil {
-		log.Fatalln(err)
-		return
-	}
+	//	qp, err := frontier.NewPersistentQueueProvider("abc")
+	//	if err != nil {
+	//		log.Panicf(err.Error())
+	//		return
+	//	}
+	qp := frontier.InMemoryQueueProvider{}
+	frontier := frontier.NewBfFrontier(qp)
 
-	ctx := context.Background()
+	//	queues, err := qp.GetAll()
+	//	if err != nil {
+	//		log.Panicln(err.Error())
+	//		return
+	//	}
+	//	frontier.LoadQueues(queues)
 
-	dht, err := dht.New(ctx, basicHost, dht.Mode(dht.ModeAutoServer))
+	dispatcher, err := SetupDispatcher(context.Background(), opts, frontier.Put)
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatalf("Failed to setup dispatcher: %s", err.Error())
 		return
 	}
 
 	if *bootstrapNode != "" {
-		bootstrapFrom(context.Background(), basicHost, []string{*bootstrapNode})
+		dispatcher.BootstrapFrom(context.Background(), []string{*bootstrapNode})
 	}
 
-	if err = dht.Bootstrap(ctx); err != nil {
-		log.Fatalln(err)
+	addresses, err := dispatcher.GetAddress()
+	if err != nil {
+		log.Fatalf("Error building address: %s", err.Error())
 		return
 	}
 
-	hostAddr, _ := multiaddr.NewMultiaddr(fmt.Sprintf("/ipfs/%s", basicHost.ID()))
-	log.Println("I can be reached at: ")
-	for _, addr := range basicHost.Addrs() {
-		log.Println(addr.Encapsulate(hostAddr))
+	for _, e := range addresses {
+		log.Println("I can be reached at: %s", e.String())
 	}
 
 	time.Sleep(500 * time.Millisecond)
-	frontier, err := frontier.NewBfFrontier()
-	if err != nil {
-		log.Fatalln(err)
-		return
-	}
-
-	dispatcher := NewDispatcher(basicHost, dht, frontier.Put)
 
 	parsedUrl, err := url.Parse(*seedUrl)
 	if err != nil {
@@ -90,13 +85,25 @@ func main() {
 		return
 	}
 
+	counter := ratecounter.NewRateCounter(1 * time.Second)
+	var total atomic.Uint64
+	go func() {
+		t := time.Tick(5 * time.Second)
+		for range t {
+			log.Printf("Ops/sec: %d; Total: %d", counter.Rate(), total.Load())
+		}
+	}()
+
 	err = dispatcher.Dispatch(*parsedUrl)
 	if err != nil {
 		log.Fatalln(err)
 		return
 	}
 
+	fetcher := fetcher.DefaultFetcher{}
+
 	for {
+		time.Sleep(50 * time.Millisecond)
 		url, accessAt, err := frontier.Get()
 		if err != nil {
 			log.Println(err)
@@ -106,48 +113,21 @@ func main() {
 		go func() {
 
 			time.Sleep(time.Until(accessAt))
+			// log.Printf("Crawling %s", url.Hostname())
 
-			time.Sleep(250 * time.Millisecond)
-			frontier.Processed(*url.URL, time.Duration(250*time.Millisecond))
-
-			frontier.Put(*url.URL)
-
-			log.Println(url.String())
-		}()
-	}
-}
-
-func bootstrapFrom(ctx context.Context, host host.Host, bootstrapNodes []string) {
-	for _, bootstrapNode := range bootstrapNodes {
-		bootstrapMaddr := multiaddr.StringCast(bootstrapNode)
-		bootstrapPeerInfo, err := peer.AddrInfoFromP2pAddr(bootstrapMaddr)
-		if err != nil {
-			log.Printf("Failed to bootstrap from node %s", bootstrapNode)
-			continue
-		}
-
-		go func() {
-			host.Peerstore().AddAddrs(bootstrapPeerInfo.ID, bootstrapPeerInfo.Addrs, peerstore.PermanentAddrTTL)
-			if err := host.Connect(context.Background(), *bootstrapPeerInfo); err != nil {
-				log.Printf("Failed to connect to node %s", bootstrapPeerInfo.String())
+			resp, err := fetcher.Fetch(url)
+			if err != nil {
 				return
-			} else {
-				log.Printf("Bootstraped with node %s", bootstrapPeerInfo.ID)
 			}
+
+			frontier.Processed(url, resp.TTR)
+
+			for _, e := range resp.Links {
+				dispatcher.Dispatch(e)
+			}
+
+			counter.Incr(1)
+			total.Add(1)
 		}()
 	}
-}
-
-func SendMessage(s network.Stream, message []byte) ([]byte, error) {
-	_, err := s.Write(message)
-	if err != nil {
-		return nil, err
-	}
-	buf := bufio.NewReader(s)
-	str, err := buf.ReadString('\n')
-	if err != nil {
-		return nil, err
-	}
-
-	return []byte(str), err
 }

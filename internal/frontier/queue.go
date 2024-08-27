@@ -1,27 +1,23 @@
 package frontier
 
 import (
-	"net/url"
-	"time"
-
 	"github.com/xunterr/crawler/pkg/queues"
 )
 
 type Url struct {
-	*url.URL
-	accessAt time.Time
-	weight   uint32
+	Url    string
+	Weight uint32
 }
 
 type FrontierQueue struct {
-	queue         *queues.Queue[Url]
+	queue         queues.Queue[Url]
 	isActive      bool
 	sessionBudget uint64
 }
 
-func NewFrontierQueue(isActive bool, sessionBudget uint64) *FrontierQueue {
+func NewFrontierQueue(from queues.Queue[Url], isActive bool, sessionBudget uint64) *FrontierQueue {
 	return &FrontierQueue{
-		queue:         queues.NewQueue[Url](),
+		queue:         from,
 		isActive:      isActive,
 		sessionBudget: sessionBudget,
 	}
@@ -37,16 +33,17 @@ func (q *FrontierQueue) Dequeue() (Url, bool) {
 		return Url{}, false
 	}
 
-	url, ok := q.queue.Pop()
+	url := Url{}
+	ok := q.queue.Pop(&url)
 
 	if !ok {
 		return Url{}, false
 	}
 
-	if q.sessionBudget < uint64(url.weight) {
+	if q.sessionBudget < uint64(url.Weight) {
 		q.sessionBudget = 0
 	} else {
-		q.sessionBudget -= uint64(url.weight)
+		q.sessionBudget -= uint64(url.Weight)
 	}
 
 	if q.sessionBudget == 0 {
@@ -57,7 +54,7 @@ func (q *FrontierQueue) Dequeue() (Url, bool) {
 }
 
 func (q *FrontierQueue) IsEmpty() bool {
-	return len(*q.queue) == 0
+	return q.queue.Len() == 0
 }
 
 func (q *FrontierQueue) Reset(sessionBudget uint64) {

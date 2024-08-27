@@ -2,99 +2,147 @@ package frontier
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net/url"
 	"sync"
 	"time"
 
-	"github.com/beeker1121/goque"
+	"github.com/syndtr/goleveldb/leveldb"
+	boom "github.com/tylertreat/BoomFilters"
 	"github.com/xunterr/crawler/pkg/queues"
 )
 
-type Frontier interface {
-	Put(url url.URL)
-	Results() chan url.URL
+type QueueProvider interface {
+	Get(string) (queues.Queue[Url], error)
 }
 
-type DefaultFrontier struct {
-	results chan url.URL
+type InMemoryQueueProvider struct{}
+
+func (qp InMemoryQueueProvider) Get(host string) (queues.Queue[Url], error) {
+	return queues.NewQueue[Url](), nil
 }
 
-func NewDefaultFrontier() *DefaultFrontier {
-	return &DefaultFrontier{
-		results: make(chan url.URL, 69),
+type PersistentQueueProvider struct {
+	base string
+	db   *leveldb.DB
+}
+
+func NewPersistentQueueProvider(dbPath string) (*PersistentQueueProvider, error) {
+	db, err := leveldb.OpenFile(dbPath, nil)
+
+	return &PersistentQueueProvider{
+		base: dbPath,
+		db:   db,
+	}, err
+}
+
+func (qp *PersistentQueueProvider) Get(id string) (queues.Queue[Url], error) {
+	name := fmt.Sprintf("%s-%s", qp.base, id)
+	err := qp.db.Put([]byte(id), []byte(name), nil)
+	if err != nil {
+		return nil, err
 	}
+	log.Printf("Opening %s", name)
+	return queues.NewPersistentQueue[Url](name)
 }
 
-func (f *DefaultFrontier) Put(url url.URL) {
-	//blah blah
-	log.Printf("Putting %s...", url.String())
-	f.results <- url
-}
+func (qp *PersistentQueueProvider) GetAll() (map[string]queues.Queue[Url], error) {
 
-func (f *DefaultFrontier) Results() chan url.URL {
-	return f.results
+	queueMap := make(map[string]queues.Queue[Url])
+	iter := qp.db.NewIterator(nil, nil)
+
+	for iter.Next() {
+		log.Printf("Opening %s", iter.Value())
+		queue, err := queues.NewPersistentQueue[Url](string(iter.Value()))
+		if err != nil {
+			return queueMap, err
+		}
+		queueMap[string(iter.Key())] = queue
+	}
+	return queueMap, nil
 }
 
 type BfFrontier struct {
 	activeQueues uint32
 	aqMu         sync.Mutex
 
-	queueMap map[string]*FrontierQueue
+	queueProvider QueueProvider
 
-	prefixQueue     *goque.PrefixQueue
+	queueMap map[string]*FrontierQueue
+	qmMu     sync.Mutex
+
+	bloom *boom.ScalableBloomFilter
+
 	maxActiveQueues int
 	nextQueue       *queues.PriorityQueue[string]
 	block           *sync.Cond
 
 	responseTime map[string]time.Duration
+	rtMu         sync.Mutex
 
-	inactiveQueues *queues.Queue[string]
+	inactiveQueues queues.Queue[string]
 }
 
-func NewBfFrontier() (*BfFrontier, error) {
+func NewBfFrontier(qp QueueProvider) *BfFrontier {
 	pq := queues.NewPriorityQueue[string]()
 
 	f := &BfFrontier{
 		activeQueues: 0,
 
+		queueProvider: qp,
+
 		queueMap:        make(map[string]*FrontierQueue),
 		block:           sync.NewCond(new(sync.Mutex)),
+		bloom:           boom.NewDefaultScalableBloomFilter(0.01),
 		maxActiveQueues: 256,
 		responseTime:    make(map[string]time.Duration),
 		nextQueue:       pq,
 		inactiveQueues:  queues.NewQueue[string](),
 	}
 
-	return f, nil
+	return f
 }
 
-func (f *BfFrontier) Get() (Url, time.Time, error) {
+func (f *BfFrontier) Get() (url.URL, time.Time, error) {
 	queueIndex, accessAt, ok := f.getNextQueue()
 	if !ok {
-		return Url{}, time.Time{}, errors.New("Failed to get new queue index")
+		return url.URL{}, time.Time{}, errors.New("Failed to get new queue index")
 	}
 
+	f.qmMu.Lock()
 	queue, ok := f.queueMap[queueIndex]
+	f.qmMu.Unlock()
 
 	if !ok {
 		log.Printf("Unable to retreive url queue %s", queueIndex)
 		return f.Get()
 	}
 
-	url, ok := queue.Dequeue()
+	u, ok := queue.Dequeue()
 
 	if !ok {
 		f.setInactive(queueIndex)
 		return f.Get()
 	}
 
-	return url, accessAt, nil
+	url, err := url.Parse(u.Url)
+	if err != nil {
+		return f.Get()
+	}
+
+	return *url, accessAt, nil
 }
 
 func (f *BfFrontier) Processed(url url.URL, ttr time.Duration) {
+	f.rtMu.Lock()
 	f.responseTime[url.Hostname()] = ttr
+	f.rtMu.Unlock()
+
+	f.qmMu.Lock()
 	queue, ok := f.queueMap[url.Hostname()]
+	f.qmMu.Unlock()
+
 	if !ok {
 		return
 	}
@@ -107,7 +155,7 @@ func (f *BfFrontier) Processed(url url.URL, ttr time.Duration) {
 		f.wakeInactiveQueue()
 	}
 
-	//add to bloom filter
+	f.bloom.Add([]byte(url.String()))
 }
 
 func (f *BfFrontier) setInactive(queueID string) {
@@ -123,24 +171,32 @@ func (f *BfFrontier) wakeInactiveQueue() {
 		return
 	}
 
-	inactiveQueueID, ok := f.inactiveQueues.Pop()
+	var inactiveQueueID string
+	ok := f.inactiveQueues.Pop(&inactiveQueueID)
 	if !ok {
 		return
 	}
 
+	f.qmMu.Lock()
 	inactiveQueue, ok := f.queueMap[inactiveQueueID]
+	f.qmMu.Unlock()
+
 	if !ok {
 		return
 	}
 
 	inactiveQueue.Reset(20)
+
+	f.qmMu.Lock()
 	f.queueMap[inactiveQueueID] = inactiveQueue
+	f.qmMu.Unlock()
 
 	f.setNextQueue(inactiveQueueID, time.Now().UTC())
 
 	f.aqMu.Lock()
 	f.activeQueues += 1
 	f.aqMu.Unlock()
+	println(f.activeQueues)
 }
 
 func (f *BfFrontier) canAddNewQueue() bool {
@@ -152,9 +208,12 @@ func (f *BfFrontier) canAddNewQueue() bool {
 
 func (f *BfFrontier) getNextRequestTime(host string) time.Time {
 	after := time.Duration(1 * time.Second)
+
+	f.rtMu.Lock()
 	if responseTime, ok := f.responseTime[host]; ok {
 		after = responseTime * 10
 	}
+	f.rtMu.Unlock()
 
 	return time.Now().UTC().Add(after)
 
@@ -180,37 +239,56 @@ func (f *BfFrontier) setNextQueue(queueIndex string, at time.Time) {
 	f.block.L.Unlock()
 }
 
-func (f *BfFrontier) Stop() {
-	f.prefixQueue.Close()
-	//TODO: stop all processes using context
-}
-
 func (f *BfFrontier) Put(url url.URL) {
+	if f.bloom.Test([]byte(url.String())) {
+		return
+	}
+
+	f.qmMu.Lock()
 	queue, ok := f.queueMap[url.Hostname()]
+	f.qmMu.Unlock()
+
 	if !ok {
-
 		//no mapping, create one
-
-		active := f.canAddNewQueue()
-
-		queue = NewFrontierQueue(active, 20)
-		f.queueMap[url.Hostname()] = queue
-
-		if active {
-			f.aqMu.Lock()
-			f.activeQueues++
-			f.aqMu.Unlock()
-
-			nextRequest := f.getNextRequestTime(url.Hostname())
-			f.setNextQueue(url.Hostname(), nextRequest)
-		} else {
-			f.inactiveQueues.Push(url.Hostname())
+		q, err := f.queueProvider.Get(url.Hostname())
+		if err != nil {
+			log.Printf("Failed to create new queue: %s", err.Error())
+			return
 		}
+
+		queue = f.addNewQueue(url.Hostname(), q, 20)
 	}
 
 	queue.Enqueue(Url{
-		URL:    &url,
-		weight: 1,
+		Url:    url.String(),
+		Weight: 1,
 	})
+}
 
+func (f *BfFrontier) addNewQueue(host string, q queues.Queue[Url], limit uint64) *FrontierQueue {
+
+	active := f.canAddNewQueue()
+	queue := NewFrontierQueue(q, active, 20)
+
+	f.qmMu.Lock()
+	f.queueMap[host] = queue
+	f.qmMu.Unlock()
+
+	if active {
+		f.aqMu.Lock()
+		f.activeQueues++
+		f.aqMu.Unlock()
+
+		nextRequest := f.getNextRequestTime(host)
+		f.setNextQueue(host, nextRequest)
+	} else {
+		f.inactiveQueues.Push(host)
+	}
+
+	return queue
+}
+func (f *BfFrontier) LoadQueues(queues map[string]queues.Queue[Url]) {
+	for k, queue := range queues {
+		f.addNewQueue(k, queue, 20)
+	}
 }
