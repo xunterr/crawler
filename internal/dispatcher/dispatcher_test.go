@@ -15,33 +15,29 @@ func setup() *Dispatcher {
 		id := make([]byte, 4)
 		binary.LittleEndian.PutUint32(id, uint32(i*2))
 
+		addr, err := net.ResolveTCPAddr("tcp", "192.168.0.0:6969")
+		if err != nil {
+			panic(err)
+		}
+
 		finger[i] = &Node{
-			addr: net.ParseIP("192.168.0.0"),
+			addr: addr,
 			id:   id,
 		}
 	}
 
+	addr, err := net.ResolveTCPAddr("tcp", "192.168.0.0:6969")
+	if err != nil {
+		panic(err)
+	}
+
 	return &Dispatcher{
 		self: &Node{
-			addr: net.ParseIP("192.168.0.1"),
+			addr: addr,
 			id:   []byte{0},
 		},
 
 		fingerTable: finger,
-	}
-}
-
-func TestFindSuccessor(t *testing.T) {
-	dispatcher := setup()
-
-	id := make([]byte, 4)
-	binary.LittleEndian.PutUint32(id, uint32(2))
-
-	succ := dispatcher.findSuccessor(id)
-
-	if succ != dispatcher.fingerTable[0] {
-		t.Logf("Successor for key %d is %d", id, succ.id)
-		t.Fail()
 	}
 }
 

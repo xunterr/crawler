@@ -1,0 +1,20 @@
+syntax = "proto3";
+package package;
+option go_package = "/proto";
+
+message Header {
+  string scope = 1;
+}
+
+message DhtFindSuccessor {
+  bytes key = 1;
+}
+
+message DhtFindSuccessorResult {
+  string successor = 1;
+}
+
+message DispatcherRoute {
+  string key = 1;
+  string url = 2;
+}

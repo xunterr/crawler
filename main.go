@@ -2,45 +2,41 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"flag"
-	"fmt"
 	"log"
 	"net/url"
 	"time"
 
 	"sync/atomic"
 
-	golog "github.com/ipfs/go-log/v2"
-	"github.com/libp2p/go-libp2p"
-	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/paulbellamy/ratecounter"
+	"github.com/xunterr/crawler/internal/dispatcher"
 	"github.com/xunterr/crawler/internal/fetcher"
 	"github.com/xunterr/crawler/internal/frontier"
+	"github.com/xunterr/crawler/internal/net"
 )
 
 func main() {
-	bootstrapNode := flag.String("b", "", "bootstrap node")
-	seedUrl := flag.String("u", "", "seed url")
-	port := flag.Int("p", 6969, "port number")
-	flag.Parse()
-
-	golog.SetAllLoggers(golog.LevelError)
-	privKey, _, err := crypto.GenerateKeyPairWithReader(crypto.RSA, 2048, rand.Reader)
-
-	if err != nil {
-		log.Fatalln(err)
-		return
-	}
-
-	opts := []libp2p.Option{
-		libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", *port)),
-		libp2p.Identity(privKey),
-		libp2p.DefaultTransports,
-		libp2p.DefaultMuxers,
-		libp2p.DefaultSecurity,
-		libp2p.NATPortMap(),
-	}
+	//	bootstrapNode := flag.String("b", "", "bootstrap node")
+	//	seedUrl := flag.String("u", "", "seed url")
+	//	port := flag.Int("p", 6969, "port number")
+	//	flag.Parse()
+	//
+	//	golog.SetAllLoggers(golog.LevelError)
+	//	privKey, _, err := crypto.GenerateKeyPairWithReader(crypto.RSA, 2048, rand.Reader)
+	//
+	//	if err != nil {
+	//		log.Fatalln(err)
+	//		return
+	//	}
+	//
+	//	opts := []libp2p.Option{
+	//		libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", *port)),
+	//		libp2p.Identity(privKey),
+	//		libp2p.DefaultTransports,
+	//		libp2p.DefaultMuxers,
+	//		libp2p.DefaultSecurity,
+	//		libp2p.NATPortMap(),
+	//	}
 
 	//	qp, err := frontier.NewPersistentQueueProvider("abc")
 	//	if err != nil {
@@ -57,25 +53,25 @@ func main() {
 	//	}
 	//	frontier.LoadQueues(queues)
 
-	dispatcher, err := SetupDispatcher(context.Background(), opts, frontier.Put)
-	if err != nil {
-		log.Fatalf("Failed to setup dispatcher: %s", err.Error())
-		return
-	}
-
-	if *bootstrapNode != "" {
-		dispatcher.BootstrapFrom(context.Background(), []string{*bootstrapNode})
-	}
-
-	addresses, err := dispatcher.GetAddress()
-	if err != nil {
-		log.Fatalf("Error building address: %s", err.Error())
-		return
-	}
-
-	for _, e := range addresses {
-		log.Println("I can be reached at: %s", e.String())
-	}
+	//	dispatcher, err := SetupDispatcher(context.Background(), opts, frontier.Put)
+	//	if err != nil {
+	//		log.Fatalf("Failed to setup dispatcher: %s", err.Error())
+	//		return
+	//	}
+	//
+	//	if *bootstrapNode != "" {
+	//		dispatcher.BootstrapFrom(context.Background(), []string{*bootstrapNode})
+	//	}
+	//
+	//	addresses, err := dispatcher.GetAddress()
+	//	if err != nil {
+	//		log.Fatalf("Error building address: %s", err.Error())
+	//		return
+	//	}
+	//
+	//	for _, e := range addresses {
+	//		log.Println("I can be reached at: %s", e.String())
+	//	}
 
 	time.Sleep(500 * time.Millisecond)
 
@@ -94,6 +90,15 @@ func main() {
 		}
 	}()
 
+	client := net.NewClient()
+	router := net.NewRouter()
+	server := net.NewServer(router)
+	dispatcher, err := dispatcher.NewDispatcher(client, router, "127.0.0.1:6969")
+	if err != nil {
+		panic(err)
+	}
+
+	go server.Listen(context.Background(), "127.0.0.1:6969")
 	err = dispatcher.Dispatch(*parsedUrl)
 	if err != nil {
 		log.Fatalln(err)
