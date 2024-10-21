@@ -2,6 +2,7 @@ package net
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 
@@ -35,6 +36,7 @@ func NewRouter() *Router {
 func (s *Server) Listen(ctx context.Context, addr string) error {
 	var lc net.ListenConfig
 	l, err := lc.Listen(ctx, "tcp", addr)
+	fmt.Println("Starting...")
 	if err != nil {
 		return err
 	}
@@ -62,7 +64,6 @@ func (s *Server) Listen(ctx context.Context, addr string) error {
 }
 
 func (s *Server) handleConn(conn net.Conn) error {
-	println("here")
 	session, err := yamux.Server(conn, nil)
 	if err != nil {
 		log.Printf("Failed to open a session: %s", err.Error())
@@ -72,7 +73,7 @@ func (s *Server) handleConn(conn net.Conn) error {
 	for {
 		stream, err := session.Accept()
 		if err != nil {
-			println(err)
+			log.Println(err.Error())
 			if session.IsClosed() {
 				break
 			}
@@ -81,7 +82,7 @@ func (s *Server) handleConn(conn net.Conn) error {
 
 		header, err := readHeader(stream)
 		if err != nil {
-			println(err)
+			log.Println(err.Error())
 			continue
 		}
 

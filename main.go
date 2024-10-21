@@ -1,138 +1,68 @@
 package main
 
 import (
+	"bufio"
 	"context"
-	"log"
-	"net/url"
-	"time"
+	"crypto/sha1"
+	"flag"
+	"fmt"
+	"os"
 
-	"sync/atomic"
-
-	"github.com/paulbellamy/ratecounter"
 	"github.com/xunterr/crawler/internal/dispatcher"
-	"github.com/xunterr/crawler/internal/fetcher"
-	"github.com/xunterr/crawler/internal/frontier"
-	"github.com/xunterr/crawler/internal/net"
+	p2p "github.com/xunterr/crawler/internal/net"
 )
 
+var (
+	addr          string = "127.0.0.1:6969"
+	bootstrapNode string = ""
+)
+
+func init() {
+	flag.StringVar(&addr, "addr", addr, "defines node address")
+	flag.StringVar(&bootstrapNode, "node", "", "node to bootstrap with")
+}
+
 func main() {
-	//	bootstrapNode := flag.String("b", "", "bootstrap node")
-	//	seedUrl := flag.String("u", "", "seed url")
-	//	port := flag.Int("p", 6969, "port number")
-	//	flag.Parse()
-	//
-	//	golog.SetAllLoggers(golog.LevelError)
-	//	privKey, _, err := crypto.GenerateKeyPairWithReader(crypto.RSA, 2048, rand.Reader)
-	//
-	//	if err != nil {
-	//		log.Fatalln(err)
-	//		return
-	//	}
-	//
-	//	opts := []libp2p.Option{
-	//		libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", *port)),
-	//		libp2p.Identity(privKey),
-	//		libp2p.DefaultTransports,
-	//		libp2p.DefaultMuxers,
-	//		libp2p.DefaultSecurity,
-	//		libp2p.NATPortMap(),
-	//	}
+	flag.Parse()
 
-	//	qp, err := frontier.NewPersistentQueueProvider("abc")
-	//	if err != nil {
-	//		log.Panicf(err.Error())
-	//		return
-	//	}
-	qp := frontier.InMemoryQueueProvider{}
-	frontier := frontier.NewBfFrontier(qp)
+	client := p2p.NewClient()
+	router := p2p.NewRouter()
+	server := p2p.NewServer(router)
 
-	//	queues, err := qp.GetAll()
-	//	if err != nil {
-	//		log.Panicln(err.Error())
-	//		return
-	//	}
-	//	frontier.LoadQueues(queues)
-
-	//	dispatcher, err := SetupDispatcher(context.Background(), opts, frontier.Put)
-	//	if err != nil {
-	//		log.Fatalf("Failed to setup dispatcher: %s", err.Error())
-	//		return
-	//	}
-	//
-	//	if *bootstrapNode != "" {
-	//		dispatcher.BootstrapFrom(context.Background(), []string{*bootstrapNode})
-	//	}
-	//
-	//	addresses, err := dispatcher.GetAddress()
-	//	if err != nil {
-	//		log.Fatalf("Error building address: %s", err.Error())
-	//		return
-	//	}
-	//
-	//	for _, e := range addresses {
-	//		log.Println("I can be reached at: %s", e.String())
-	//	}
-
-	time.Sleep(500 * time.Millisecond)
-
-	parsedUrl, err := url.Parse(*seedUrl)
-	if err != nil {
-		log.Fatalln("Failed to parse url")
-		return
-	}
-
-	counter := ratecounter.NewRateCounter(1 * time.Second)
-	var total atomic.Uint64
-	go func() {
-		t := time.Tick(5 * time.Second)
-		for range t {
-			log.Printf("Ops/sec: %d; Total: %d", counter.Rate(), total.Load())
-		}
-	}()
-
-	client := net.NewClient()
-	router := net.NewRouter()
-	server := net.NewServer(router)
-	dispatcher, err := dispatcher.NewDispatcher(client, router, "127.0.0.1:6969")
+	go server.Listen(context.Background(), addr)
+	d, err := dispatcher.NewDispatcher(client, router, addr)
 	if err != nil {
 		panic(err)
 	}
 
-	go server.Listen(context.Background(), "127.0.0.1:6969")
-	err = dispatcher.Dispatch(*parsedUrl)
-	if err != nil {
-		log.Fatalln(err)
-		return
-	}
-
-	fetcher := fetcher.DefaultFetcher{}
-
-	for {
-		time.Sleep(50 * time.Millisecond)
-		url, accessAt, err := frontier.Get()
+	fmt.Printf("Node to bootstrap from: %s\n", bootstrapNode)
+	if bootstrapNode != "" {
+		println("joining...")
+		bn, err := dispatcher.ToNode(bootstrapNode)
 		if err != nil {
-			log.Println(err)
-			return
+			panic(err)
+		}
+		err = d.Join(bn)
+		if err != nil {
+			panic(err)
+		}
+		println("ok")
+	}
+	id := d.GetID()
+	fmt.Printf("My ID: %s\n", string(id))
+
+	scanner := bufio.NewScanner(os.Stdin)
+	for {
+		scanner.Scan()
+
+		id := sha1.New()
+		id.Write([]byte(scanner.Text()))
+		succ, err := d.FindSuccessor(id.Sum(nil))
+		if err != nil {
+			panic(err)
 		}
 
-		go func() {
-
-			time.Sleep(time.Until(accessAt))
-			// log.Printf("Crawling %s", url.Hostname())
-
-			resp, err := fetcher.Fetch(url)
-			if err != nil {
-				return
-			}
-
-			frontier.Processed(url, resp.TTR)
-
-			for _, e := range resp.Links {
-				dispatcher.Dispatch(e)
-			}
-
-			counter.Incr(1)
-			total.Add(1)
-		}()
+		println(id)
+		println(succ.Addr.String())
 	}
 }

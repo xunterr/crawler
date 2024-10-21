@@ -1,7 +1,6 @@
 package net
 
 import (
-	"bytes"
 	"net"
 	"sync"
 
@@ -13,6 +12,7 @@ import (
 type Conn struct {
 	Remote net.Addr
 	Scope  string
+	buff   []byte
 	stream net.Conn
 }
 
@@ -26,21 +26,6 @@ func (c *Conn) Write(p []byte) (n int, err error) {
 
 func (c *Conn) Close() error {
 	return c.stream.Close()
-}
-
-func (c *Conn) Call(data []byte) ([]byte, error) {
-	_, err := c.Write(data)
-	if err != nil {
-		return nil, err
-	}
-
-	var buf bytes.Buffer
-	_, err = buf.ReadFrom(c)
-	if err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
 }
 
 type Client struct {
@@ -94,12 +79,12 @@ func sendHeader(scope string, conn net.Conn) error {
 		return err
 	}
 
-	_, err = conn.Write(data)
+	_, err = WriteMessage(conn, data)
 	return err
 }
 
 func readHeader(conn net.Conn) (*pb.Header, error) {
-	data, err := Read(conn)
+	data, err := ReadMessage(conn)
 	if err != nil {
 		return nil, err
 	}

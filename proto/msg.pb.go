@@ -67,7 +67,7 @@ func (x *Header) GetScope() string {
 	return ""
 }
 
-type DhtFindSuccessor struct {
+type Key struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
@@ -75,8 +75,8 @@ type DhtFindSuccessor struct {
 	Key []byte `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
 }
 
-func (x *DhtFindSuccessor) Reset() {
-	*x = DhtFindSuccessor{}
+func (x *Key) Reset() {
+	*x = Key{}
 	if protoimpl.UnsafeEnabled {
 		mi := &file_msg_proto_msgTypes[1]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -84,13 +84,13 @@ func (x *DhtFindSuccessor) Reset() {
 	}
 }
 
-func (x *DhtFindSuccessor) String() string {
+func (x *Key) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*DhtFindSuccessor) ProtoMessage() {}
+func (*Key) ProtoMessage() {}
 
-func (x *DhtFindSuccessor) ProtoReflect() protoreflect.Message {
+func (x *Key) ProtoReflect() protoreflect.Message {
 	mi := &file_msg_proto_msgTypes[1]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -102,28 +102,29 @@ func (x *DhtFindSuccessor) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use DhtFindSuccessor.ProtoReflect.Descriptor instead.
-func (*DhtFindSuccessor) Descriptor() ([]byte, []int) {
+// Deprecated: Use Key.ProtoReflect.Descriptor instead.
+func (*Key) Descriptor() ([]byte, []int) {
 	return file_msg_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *DhtFindSuccessor) GetKey() []byte {
+func (x *Key) GetKey() []byte {
 	if x != nil {
 		return x.Key
 	}
 	return nil
 }
 
-type DhtFindSuccessorResult struct {
+type Node struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	Successor string `protobuf:"bytes,1,opt,name=successor,proto3" json:"successor,omitempty"`
+	Id   []byte `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Addr string `protobuf:"bytes,2,opt,name=addr,proto3" json:"addr,omitempty"`
 }
 
-func (x *DhtFindSuccessorResult) Reset() {
-	*x = DhtFindSuccessorResult{}
+func (x *Node) Reset() {
+	*x = Node{}
 	if protoimpl.UnsafeEnabled {
 		mi := &file_msg_proto_msgTypes[2]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -131,13 +132,13 @@ func (x *DhtFindSuccessorResult) Reset() {
 	}
 }
 
-func (x *DhtFindSuccessorResult) String() string {
+func (x *Node) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*DhtFindSuccessorResult) ProtoMessage() {}
+func (*Node) ProtoMessage() {}
 
-func (x *DhtFindSuccessorResult) ProtoReflect() protoreflect.Message {
+func (x *Node) ProtoReflect() protoreflect.Message {
 	mi := &file_msg_proto_msgTypes[2]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -149,16 +150,78 @@ func (x *DhtFindSuccessorResult) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use DhtFindSuccessorResult.ProtoReflect.Descriptor instead.
-func (*DhtFindSuccessorResult) Descriptor() ([]byte, []int) {
+// Deprecated: Use Node.ProtoReflect.Descriptor instead.
+func (*Node) Descriptor() ([]byte, []int) {
 	return file_msg_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *DhtFindSuccessorResult) GetSuccessor() string {
+func (x *Node) GetId() []byte {
 	if x != nil {
-		return x.Successor
+		return x.Id
+	}
+	return nil
+}
+
+func (x *Node) GetAddr() string {
+	if x != nil {
+		return x.Addr
 	}
 	return ""
+}
+
+type Finger struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	I    int64 `protobuf:"varint,1,opt,name=i,proto3" json:"i,omitempty"`
+	Node *Node `protobuf:"bytes,2,opt,name=node,proto3" json:"node,omitempty"`
+}
+
+func (x *Finger) Reset() {
+	*x = Finger{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_msg_proto_msgTypes[3]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *Finger) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Finger) ProtoMessage() {}
+
+func (x *Finger) ProtoReflect() protoreflect.Message {
+	mi := &file_msg_proto_msgTypes[3]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Finger.ProtoReflect.Descriptor instead.
+func (*Finger) Descriptor() ([]byte, []int) {
+	return file_msg_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *Finger) GetI() int64 {
+	if x != nil {
+		return x.I
+	}
+	return 0
+}
+
+func (x *Finger) GetNode() *Node {
+	if x != nil {
+		return x.Node
+	}
+	return nil
 }
 
 type DispatcherRoute struct {
@@ -173,7 +236,7 @@ type DispatcherRoute struct {
 func (x *DispatcherRoute) Reset() {
 	*x = DispatcherRoute{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_msg_proto_msgTypes[3]
+		mi := &file_msg_proto_msgTypes[4]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -186,7 +249,7 @@ func (x *DispatcherRoute) String() string {
 func (*DispatcherRoute) ProtoMessage() {}
 
 func (x *DispatcherRoute) ProtoReflect() protoreflect.Message {
-	mi := &file_msg_proto_msgTypes[3]
+	mi := &file_msg_proto_msgTypes[4]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -199,7 +262,7 @@ func (x *DispatcherRoute) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DispatcherRoute.ProtoReflect.Descriptor instead.
 func (*DispatcherRoute) Descriptor() ([]byte, []int) {
-	return file_msg_proto_rawDescGZIP(), []int{3}
+	return file_msg_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *DispatcherRoute) GetKey() string {
@@ -222,17 +285,19 @@ var file_msg_proto_rawDesc = []byte{
 	0x0a, 0x09, 0x6d, 0x73, 0x67, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x12, 0x07, 0x70, 0x61, 0x63,
 	0x6b, 0x61, 0x67, 0x65, 0x22, 0x1e, 0x0a, 0x06, 0x48, 0x65, 0x61, 0x64, 0x65, 0x72, 0x12, 0x14,
 	0x0a, 0x05, 0x73, 0x63, 0x6f, 0x70, 0x65, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x05, 0x73,
-	0x63, 0x6f, 0x70, 0x65, 0x22, 0x24, 0x0a, 0x10, 0x44, 0x68, 0x74, 0x46, 0x69, 0x6e, 0x64, 0x53,
-	0x75, 0x63, 0x63, 0x65, 0x73, 0x73, 0x6f, 0x72, 0x12, 0x10, 0x0a, 0x03, 0x6b, 0x65, 0x79, 0x18,
-	0x01, 0x20, 0x01, 0x28, 0x0c, 0x52, 0x03, 0x6b, 0x65, 0x79, 0x22, 0x36, 0x0a, 0x16, 0x44, 0x68,
-	0x74, 0x46, 0x69, 0x6e, 0x64, 0x53, 0x75, 0x63, 0x63, 0x65, 0x73, 0x73, 0x6f, 0x72, 0x52, 0x65,
-	0x73, 0x75, 0x6c, 0x74, 0x12, 0x1c, 0x0a, 0x09, 0x73, 0x75, 0x63, 0x63, 0x65, 0x73, 0x73, 0x6f,
-	0x72, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x09, 0x73, 0x75, 0x63, 0x63, 0x65, 0x73, 0x73,
-	0x6f, 0x72, 0x22, 0x35, 0x0a, 0x0f, 0x44, 0x69, 0x73, 0x70, 0x61, 0x74, 0x63, 0x68, 0x65, 0x72,
-	0x52, 0x6f, 0x75, 0x74, 0x65, 0x12, 0x10, 0x0a, 0x03, 0x6b, 0x65, 0x79, 0x18, 0x01, 0x20, 0x01,
-	0x28, 0x09, 0x52, 0x03, 0x6b, 0x65, 0x79, 0x12, 0x10, 0x0a, 0x03, 0x75, 0x72, 0x6c, 0x18, 0x02,
-	0x20, 0x01, 0x28, 0x09, 0x52, 0x03, 0x75, 0x72, 0x6c, 0x42, 0x08, 0x5a, 0x06, 0x2f, 0x70, 0x72,
-	0x6f, 0x74, 0x6f, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
+	0x63, 0x6f, 0x70, 0x65, 0x22, 0x17, 0x0a, 0x03, 0x4b, 0x65, 0x79, 0x12, 0x10, 0x0a, 0x03, 0x6b,
+	0x65, 0x79, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0c, 0x52, 0x03, 0x6b, 0x65, 0x79, 0x22, 0x2a, 0x0a,
+	0x04, 0x4e, 0x6f, 0x64, 0x65, 0x12, 0x0e, 0x0a, 0x02, 0x69, 0x64, 0x18, 0x01, 0x20, 0x01, 0x28,
+	0x0c, 0x52, 0x02, 0x69, 0x64, 0x12, 0x12, 0x0a, 0x04, 0x61, 0x64, 0x64, 0x72, 0x18, 0x02, 0x20,
+	0x01, 0x28, 0x09, 0x52, 0x04, 0x61, 0x64, 0x64, 0x72, 0x22, 0x39, 0x0a, 0x06, 0x46, 0x69, 0x6e,
+	0x67, 0x65, 0x72, 0x12, 0x0c, 0x0a, 0x01, 0x69, 0x18, 0x01, 0x20, 0x01, 0x28, 0x03, 0x52, 0x01,
+	0x69, 0x12, 0x21, 0x0a, 0x04, 0x6e, 0x6f, 0x64, 0x65, 0x18, 0x02, 0x20, 0x01, 0x28, 0x0b, 0x32,
+	0x0d, 0x2e, 0x70, 0x61, 0x63, 0x6b, 0x61, 0x67, 0x65, 0x2e, 0x4e, 0x6f, 0x64, 0x65, 0x52, 0x04,
+	0x6e, 0x6f, 0x64, 0x65, 0x22, 0x35, 0x0a, 0x0f, 0x44, 0x69, 0x73, 0x70, 0x61, 0x74, 0x63, 0x68,
+	0x65, 0x72, 0x52, 0x6f, 0x75, 0x74, 0x65, 0x12, 0x10, 0x0a, 0x03, 0x6b, 0x65, 0x79, 0x18, 0x01,
+	0x20, 0x01, 0x28, 0x09, 0x52, 0x03, 0x6b, 0x65, 0x79, 0x12, 0x10, 0x0a, 0x03, 0x75, 0x72, 0x6c,
+	0x18, 0x02, 0x20, 0x01, 0x28, 0x09, 0x52, 0x03, 0x75, 0x72, 0x6c, 0x42, 0x08, 0x5a, 0x06, 0x2f,
+	0x70, 0x72, 0x6f, 0x74, 0x6f, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
 }
 
 var (
@@ -247,19 +312,21 @@ func file_msg_proto_rawDescGZIP() []byte {
 	return file_msg_proto_rawDescData
 }
 
-var file_msg_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_msg_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_msg_proto_goTypes = []any{
-	(*Header)(nil),                 // 0: package.Header
-	(*DhtFindSuccessor)(nil),       // 1: package.DhtFindSuccessor
-	(*DhtFindSuccessorResult)(nil), // 2: package.DhtFindSuccessorResult
-	(*DispatcherRoute)(nil),        // 3: package.DispatcherRoute
+	(*Header)(nil),          // 0: package.Header
+	(*Key)(nil),             // 1: package.Key
+	(*Node)(nil),            // 2: package.Node
+	(*Finger)(nil),          // 3: package.Finger
+	(*DispatcherRoute)(nil), // 4: package.DispatcherRoute
 }
 var file_msg_proto_depIdxs = []int32{
-	0, // [0:0] is the sub-list for method output_type
-	0, // [0:0] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	2, // 0: package.Finger.node:type_name -> package.Node
+	1, // [1:1] is the sub-list for method output_type
+	1, // [1:1] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_msg_proto_init() }
@@ -281,7 +348,7 @@ func file_msg_proto_init() {
 			}
 		}
 		file_msg_proto_msgTypes[1].Exporter = func(v any, i int) any {
-			switch v := v.(*DhtFindSuccessor); i {
+			switch v := v.(*Key); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -293,7 +360,7 @@ func file_msg_proto_init() {
 			}
 		}
 		file_msg_proto_msgTypes[2].Exporter = func(v any, i int) any {
-			switch v := v.(*DhtFindSuccessorResult); i {
+			switch v := v.(*Node); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -305,6 +372,18 @@ func file_msg_proto_init() {
 			}
 		}
 		file_msg_proto_msgTypes[3].Exporter = func(v any, i int) any {
+			switch v := v.(*Finger); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_msg_proto_msgTypes[4].Exporter = func(v any, i int) any {
 			switch v := v.(*DispatcherRoute); i {
 			case 0:
 				return &v.state
@@ -323,7 +402,7 @@ func file_msg_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_msg_proto_rawDesc,
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

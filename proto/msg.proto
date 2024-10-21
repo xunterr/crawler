@@ -6,12 +6,18 @@ message Header {
   string scope = 1;
 }
 
-message DhtFindSuccessor {
+message Key {
   bytes key = 1;
 }
 
-message DhtFindSuccessorResult {
-  string successor = 1;
+message Node {
+  bytes id = 1;
+  string addr = 2;
+}
+
+message Finger {
+  int64 i = 1;
+  Node node = 2;
 }
 
 message DispatcherRoute {
