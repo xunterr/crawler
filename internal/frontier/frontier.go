@@ -196,7 +196,6 @@ func (f *BfFrontier) wakeInactiveQueue() {
 	f.aqMu.Lock()
 	f.activeQueues += 1
 	f.aqMu.Unlock()
-	println(f.activeQueues)
 }
 
 func (f *BfFrontier) canAddNewQueue() bool {
@@ -239,7 +238,7 @@ func (f *BfFrontier) setNextQueue(queueIndex string, at time.Time) {
 	f.block.L.Unlock()
 }
 
-func (f *BfFrontier) Put(url url.URL) {
+func (f *BfFrontier) Put(url *url.URL) {
 	if f.bloom.Test([]byte(url.String())) {
 		return
 	}

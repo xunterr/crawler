@@ -1,9 +1,19 @@
 syntax = "proto3";
 package package;
+import "google/protobuf/any.proto";
 option go_package = "/proto";
+
+enum Status {
+  OK = 0;
+  ACCEPTED = 1;
+  ERROR = 2;
+}
 
 message Header {
   string scope = 1;
+}
+
+message Error {
 }
 
 message Key {
@@ -18,6 +28,10 @@ message Node {
 message Finger {
   int64 i = 1;
   Node node = 2;
+}
+
+message URL {
+  string url = 1;
 }
 
 message DispatcherRoute {

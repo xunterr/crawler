@@ -1,4 +1,4 @@
-package dispatcher
+package dht
 
 import (
 	"bytes"
@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func setup() *Dispatcher {
+func setup() *DHT {
 
 	finger := make([]*Node, 10)
 
@@ -21,8 +21,8 @@ func setup() *Dispatcher {
 		}
 
 		finger[i] = &Node{
-			addr: addr,
-			id:   id,
+			Addr: addr,
+			Id:   id,
 		}
 	}
 
@@ -31,25 +31,26 @@ func setup() *Dispatcher {
 		panic(err)
 	}
 
-	return &Dispatcher{
-		self: &Node{
-			addr: addr,
-			id:   []byte{0},
-		},
+	self := &Node{
+		Addr: addr,
+		Id:   []byte{0},
+	}
 
-		fingerTable: finger,
+	return &DHT{
+		self:        self,
+		fingerTable: initFingerTable(self),
 	}
 }
 
 func TestFindPredecessor(t *testing.T) {
-	dispatcher := setup()
+	dht := setup()
 
 	id := make([]byte, 4)
 	binary.LittleEndian.PutUint32(id, uint32(16))
 
-	p := dispatcher.findPredecessor(id).id
+	p := dht.findPredecessor(id).Id
 	t.Logf("Predecessor: %d; Key: %d", p, id)
-	if bytes.Compare(p, dispatcher.fingerTable[7].id) != 0 {
+	if bytes.Compare(p, dht.fingerTable[7].id) != 0 {
 		t.FailNow()
 	}
 }

@@ -5,19 +5,25 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sync"
 
 	"github.com/hashicorp/yamux"
 )
 
-type Server struct {
-	quit   chan struct{}
+type Peer struct {
+	quit chan struct{}
+
 	router *Router
+
+	connPool map[string]*yamux.Session
+	mu       sync.Mutex
 }
 
-func NewServer(router *Router) *Server {
-	return &Server{
-		quit:   make(chan struct{}),
-		router: router,
+func NewPeer(router *Router) *Peer {
+	return &Peer{
+		quit:     make(chan struct{}),
+		router:   router,
+		connPool: make(map[string]*yamux.Session),
 	}
 }
 
@@ -33,7 +39,42 @@ func NewRouter() *Router {
 	}
 }
 
-func (s *Server) Listen(ctx context.Context, addr string) error {
+func (p *Peer) Dial(scope string, addr string) (*Conn, error) {
+	p.mu.Lock()
+	session, ok := p.connPool[addr]
+	p.mu.Unlock()
+	if !ok {
+		log.Printf("Creating new session and connection with %s", addr)
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			return nil, err
+		}
+
+		session, err = yamux.Client(conn, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		p.mu.Lock()
+		p.connPool[addr] = session
+		p.mu.Unlock()
+	}
+
+	stream, err := session.Open()
+	if err != nil {
+		return nil, err
+	}
+
+	sendHeader(scope, stream)
+
+	return &Conn{
+		Remote: session.Addr(),
+		Scope:  scope,
+		stream: stream,
+	}, nil
+}
+
+func (p *Peer) Listen(ctx context.Context, addr string) error {
 	var lc net.ListenConfig
 	l, err := lc.Listen(ctx, "tcp", addr)
 	fmt.Println("Starting...")
@@ -43,33 +84,36 @@ func (s *Server) Listen(ctx context.Context, addr string) error {
 
 	go func() {
 		<-ctx.Done()
-		close(s.quit)
+		close(p.quit)
 		log.Println("Shutting service down...")
 		l.Close()
 	}()
 
 	for {
 		c, err := l.Accept()
+		log.Println("New connection!")
 		if err != nil {
 			select {
-			case <-s.quit:
+			case <-p.quit:
 				break
 			default:
-				log.Println("Error accepting connection: %s", err.Error())
+				log.Printf("Error accepting connection: %s", err.Error())
 			}
 		}
+		go func() {
+			session, err := yamux.Server(c, nil)
+			if err != nil {
+				log.Printf("Failed to open a session: %s", err.Error())
+				return
+			}
 
-		go s.handleConn(c)
+			p.handleSession(session)
+			session.Close()
+		}()
 	}
 }
 
-func (s *Server) handleConn(conn net.Conn) error {
-	session, err := yamux.Server(conn, nil)
-	if err != nil {
-		log.Printf("Failed to open a session: %s", err.Error())
-		return err
-	}
-
+func (p *Peer) handleSession(session *yamux.Session) error {
 	for {
 		stream, err := session.Accept()
 		if err != nil {
@@ -92,7 +136,7 @@ func (s *Server) handleConn(conn net.Conn) error {
 			stream: stream,
 		}
 
-		s.router.route(context.Background(), &conn)
+		p.router.route(context.Background(), &conn)
 	}
 
 	return nil
