@@ -2,60 +2,8 @@ package net
 
 import (
 	"encoding/binary"
-	"errors"
 	"io"
-	"net"
-
-	"google.golang.org/protobuf/proto"
 )
-
-func RpcCall(peer *Peer, addr string, scope string, req proto.Message, res proto.Message) error {
-	conn, err := peer.Dial(addr)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-
-	reqBytes, err := proto.Marshal(req)
-	if err != nil {
-		return err
-	}
-
-	request := &Request{
-		Scope:   scope,
-		Payload: reqBytes,
-	}
-
-	response, err := Call(conn, request)
-
-	return proto.Unmarshal(response.Payload, res)
-}
-
-func Call(c net.Conn, req *Request) (*Response, error) {
-	data := req.Marshal()
-	msg := &Message{
-		Length:  uint32(len(data)),
-		Type:    RequestMsg,
-		Version: 1,
-		Data:    data,
-	}
-
-	_, err := c.Write(msg.Marshal())
-	if err != nil {
-		return nil, err
-	}
-
-	resMsg, err := ParseMessage(c)
-	if err != nil {
-		return nil, err
-	}
-
-	if resMsg.Type != ResponseMsg {
-		return nil, errors.New("Unexpected response type")
-	}
-
-	return ParseResponse(resMsg.Data)
-}
 
 func readData(r io.Reader) ([]byte, error) {
 	length, err := readLength(r)

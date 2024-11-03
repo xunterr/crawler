@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/hashicorp/yamux"
+	"google.golang.org/protobuf/proto"
 )
 
 type Peer struct {
@@ -106,6 +107,54 @@ func (p *Peer) Dial(addr string) (net.Conn, error) {
 	}
 
 	return stream, nil
+}
+
+func (p *Peer) CallProto(addr string, scope string, req proto.Message, res proto.Message) error {
+	reqBytes, err := proto.Marshal(req)
+	if err != nil {
+		return err
+	}
+
+	request := &Request{
+		Scope:   scope,
+		Payload: reqBytes,
+	}
+
+	response, err := p.Call(addr, request)
+
+	return proto.Unmarshal(response.Payload, res)
+}
+
+func (p *Peer) Call(addr string, req *Request) (*Response, error) {
+	conn, err := p.Dial(addr)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	data := req.Marshal()
+	msg := &Message{
+		Length:  uint32(len(data)),
+		Type:    RequestMsg,
+		Version: 1,
+		Data:    data,
+	}
+
+	_, err = conn.Write(msg.Marshal())
+	if err != nil {
+		return nil, err
+	}
+
+	resMsg, err := ParseMessage(conn)
+	if err != nil {
+		return nil, err
+	}
+
+	if resMsg.Type != ResponseMsg {
+		return nil, errors.New("Unexpected response type")
+	}
+
+	return ParseResponse(resMsg.Data)
 }
 
 func (p *Peer) OpenStream(scope string, addr string) (net.Conn, error) {

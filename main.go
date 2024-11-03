@@ -49,10 +49,11 @@ func main() {
 	frontier := frontier.NewBfFrontier(qp)
 
 	dispatcherConf := dispatcher.DispatcherConfig{
-		Addr:        addr,
-		UrlCallback: frontier.Put,
+		Addr:          addr,
+		BatchPeriodMs: 10_000,
 	}
-	dispatcher, err := dispatcher.NewDispatcher(peer, router, dispatcherConf)
+
+	dispatcher, err := dispatcher.NewDispatcher(peer, router, frontier.Put, dispatcherConf)
 	if err != nil {
 		log.Printf("Failed to init dispatcher: %s", err.Error())
 		return
@@ -66,16 +67,6 @@ func main() {
 		}
 	}
 
-	counter := ratecounter.NewRateCounter(1 * time.Second)
-	var total atomic.Uint64
-
-	go func() {
-		t := time.Tick(5 * time.Second)
-		for range t {
-			log.Printf("Ops/sec: %d; Total: %d", counter.Rate(), total.Load())
-		}
-	}()
-
 	if seed != "" {
 		err = dispatcher.Dispatch(seedUrl)
 		if err != nil {
@@ -85,6 +76,21 @@ func main() {
 	}
 
 	fetcher := fetcher.DefaultFetcher{}
+	loop(dispatcher, frontier, &fetcher)
+
+	wg.Wait()
+}
+
+func loop(dispatcher *dispatcher.Dispatcher, frontier *frontier.BfFrontier, fetcher fetcher.Fetcher) {
+	counter := ratecounter.NewRateCounter(1 * time.Second)
+	var total atomic.Uint64
+
+	go func() {
+		t := time.Tick(5 * time.Second)
+		for range t {
+			log.Printf("Ops/sec: %d; Total: %d", counter.Rate(), total.Load())
+		}
+	}()
 
 	for {
 		time.Sleep(50 * time.Millisecond)
@@ -113,5 +119,4 @@ func main() {
 			total.Add(1)
 		}()
 	}
-	wg.Wait()
 }

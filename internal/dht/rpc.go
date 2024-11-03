@@ -30,7 +30,7 @@ func (d *DHT) findSuccessorRPC(node *Node, key []byte) (*Node, error) {
 
 	res := &pb.Node{}
 
-	err := p2p.RpcCall(d.peer, node.Addr.String(), FIND_SUCCESSOR, req, res)
+	err := d.peer.CallProto(node.Addr.String(), FIND_SUCCESSOR, req, res)
 	if err != nil {
 		return nil, err
 	}
@@ -42,14 +42,14 @@ func (d *DHT) findSuccessorRPC(node *Node, key []byte) (*Node, error) {
 	}, err
 }
 
-func (d *DHT) findClosesFingerRPC(node *Node, key []byte) (*Node, error) {
+func (d *DHT) findClosestFingerRPC(node *Node, key []byte) (*Node, error) {
 	req := &pb.Key{
 		Key: key,
 	}
 
 	res := &pb.Node{}
 
-	err := p2p.RpcCall(d.peer, node.Addr.String(), FIND_CLOSEST, req, res)
+	err := d.peer.CallProto(node.Addr.String(), FIND_CLOSEST, req, res)
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +68,7 @@ func (d *DHT) updatePredecessorRPC(node *Node, pred *Node) (*Node, error) {
 	}
 
 	res := &pb.Node{}
-	if err := p2p.RpcCall(d.peer, node.Addr.String(), UPDATE_PREDECESSOR, req, res); err != nil {
+	if err := d.peer.CallProto(node.Addr.String(), UPDATE_PREDECESSOR, req, res); err != nil {
 		return nil, err
 	}
 
@@ -76,11 +76,6 @@ func (d *DHT) updatePredecessorRPC(node *Node, pred *Node) (*Node, error) {
 }
 
 func (d *DHT) updateFingerRPC(n *Node, finger *Node, i int) error {
-	conn, err := d.peer.Dial(n.Addr.String())
-	if err != nil {
-		return err
-	}
-
 	f := &pb.Finger{
 		I: int64(i),
 		Node: &pb.Node{
@@ -100,7 +95,7 @@ func (d *DHT) updateFingerRPC(n *Node, finger *Node, i int) error {
 	}
 
 	log.Printf("Updating %d th finger of node %s", i, n.Addr.String())
-	_, err = p2p.Call(conn, req)
+	_, err = d.peer.Call(n.Addr.String(), req)
 
 	return nil
 }
@@ -138,6 +133,7 @@ func (d *DHT) findSuccessorHandler(ctx context.Context, req *p2p.Request, rw *p2
 func (d *DHT) updatePredecessorHandler(ctx context.Context, req *p2p.Request, rw *p2p.ResponseWriter) {
 	msg := &pb.Node{}
 	if err := proto.Unmarshal(req.Payload, msg); err != nil {
+		rw.Response(false, []byte{})
 		return
 	}
 
@@ -157,7 +153,7 @@ func (d *DHT) updatePredecessorHandler(ctx context.Context, req *p2p.Request, rw
 
 	data, err := proto.Marshal(res)
 	if err != nil {
-		rw.Response(false, data)
+		rw.Response(false, []byte{})
 		return
 	}
 

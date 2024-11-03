@@ -21,20 +21,21 @@ type UrlDiscoveredCallback func(url *url.URL)
 const SCOPE = "dispatcher.urlFound"
 
 type DispatcherConfig struct {
-	Addr        string
-	UrlCallback UrlDiscoveredCallback
+	BatchPeriodMs int
+	Addr          string
 }
 
 type Dispatcher struct {
 	peer        *p2p.Peer
 	dht         *dht.DHT
 	urlCallback UrlDiscoveredCallback
+	conf        DispatcherConfig
 
 	batches map[string][]string
 	batchMu sync.Mutex
 }
 
-func NewDispatcher(peer *p2p.Peer, router *p2p.Router, conf DispatcherConfig) (*Dispatcher, error) {
+func NewDispatcher(peer *p2p.Peer, router *p2p.Router, callback UrlDiscoveredCallback, conf DispatcherConfig) (*Dispatcher, error) {
 	dht, err := dht.NewDHT(peer, router, conf.Addr)
 	if err != nil {
 		return nil, err
@@ -43,7 +44,7 @@ func NewDispatcher(peer *p2p.Peer, router *p2p.Router, conf DispatcherConfig) (*
 	d := &Dispatcher{
 		peer:        peer,
 		dht:         dht,
-		urlCallback: conf.UrlCallback,
+		urlCallback: callback,
 		batches:     make(map[string][]string),
 	}
 
@@ -107,7 +108,7 @@ func (d *Dispatcher) createBatch(node string, u *url.URL) error {
 }
 
 func (d *Dispatcher) dispatcherLoop(ctx context.Context) {
-	t := time.Tick(30 * time.Second)
+	t := time.Tick(time.Duration(d.conf.BatchPeriodMs) * time.Millisecond)
 
 	for {
 		select {
@@ -145,18 +146,12 @@ func (d *Dispatcher) writeBatch(ctx context.Context, node string, scope string, 
 		return err
 	}
 
-	conn, err := d.peer.Dial(node)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-
 	req := &p2p.Request{
 		Scope:   scope,
 		Payload: batchBytes,
 	}
 
-	res, err := p2p.Call(conn, req)
+	res, err := d.peer.Call(node, req)
 	if res.IsError {
 		return errors.New(fmt.Sprintf("Peer %s returned error on batch send: %s", node, string(res.Payload)))
 	}

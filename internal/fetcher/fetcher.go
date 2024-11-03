@@ -16,7 +16,7 @@ type Fetcher interface {
 
 type DefaultFetcher struct{}
 
-func (df *DefaultFetcher) Fetch(page url.URL) (Response, error) {
+func (df *DefaultFetcher) Fetch(page *url.URL) (Response, error) {
 	data, ttr, err := get(page)
 	if err != nil {
 		return Response{}, err
