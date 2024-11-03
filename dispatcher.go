@@ -31,6 +31,8 @@ type Dispatcher struct {
 	dht         *dht.IpfsDHT
 	urlCallback UrlDiscoveredCallback
 
+	urlStreams map[string]chan []byte
+
 	batches map[peer.ID][]string
 	batchMu sync.Mutex
 }

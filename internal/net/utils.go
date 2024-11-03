@@ -2,16 +2,15 @@ package net
 
 import (
 	"encoding/binary"
+	"errors"
 	"io"
-	"log"
 	"net"
 
-	pb "github.com/xunterr/crawler/proto"
 	"google.golang.org/protobuf/proto"
 )
 
 func RpcCall(peer *Peer, addr string, scope string, req proto.Message, res proto.Message) error {
-	conn, err := peer.Dial(scope, addr)
+	conn, err := peer.Dial(addr)
 	if err != nil {
 		return err
 	}
@@ -22,57 +21,61 @@ func RpcCall(peer *Peer, addr string, scope string, req proto.Message, res proto
 		return err
 	}
 
-	resBytes, err := Call(conn, reqBytes)
+	request := &Request{
+		Scope:   scope,
+		Payload: reqBytes,
+	}
 
-	return proto.Unmarshal(resBytes, res)
+	response, err := Call(conn, request)
+
+	return proto.Unmarshal(response.Payload, res)
 }
 
-func Call(c *Conn, data []byte) ([]byte, error) {
-	_, err := WriteMessage(c, data)
+func Call(c net.Conn, req *Request) (*Response, error) {
+	data := req.Marshal()
+	msg := &Message{
+		Length:  uint32(len(data)),
+		Type:    RequestMsg,
+		Version: 1,
+		Data:    data,
+	}
+
+	_, err := c.Write(msg.Marshal())
 	if err != nil {
 		return nil, err
 	}
 
-	return ReadMessage(c)
+	resMsg, err := ParseMessage(c)
+	if err != nil {
+		return nil, err
+	}
+
+	if resMsg.Type != ResponseMsg {
+		return nil, errors.New("Unexpected response type")
+	}
+
+	return ParseResponse(resMsg.Data)
 }
 
-func WriteMessage(w io.Writer, data []byte) (int, error) {
-	packed := packMessage(data)
-	return w.Write(packed)
-}
-
-func ReadMessage(r io.Reader) ([]byte, error) {
+func readData(r io.Reader) ([]byte, error) {
 	length, err := readLength(r)
 	if err != nil {
 		return nil, err
 	}
 
 	buf := make([]byte, length)
+
 	n, err := r.Read(buf)
 	if err != nil {
 		return nil, err
 	}
 
-	if uint32(n) != length {
-		log.Printf("Actual data length (%d) is less than declared (%d)", n, length)
-	}
-
 	return buf[:n], err
-}
-
-func readLength(r io.Reader) (uint32, error) {
-	buf := make([]byte, 4)
-	n, err := r.Read(buf)
-	if err != nil {
-		return 0, err
-	}
-
-	return binary.LittleEndian.Uint32(buf[:n]), err
 }
 
 func packMessage(data []byte) []byte {
 	msg := make([]byte, len(data)+4)
-	binary.LittleEndian.PutUint32(msg, uint32(len(data)))
+	binary.BigEndian.PutUint32(msg, uint32(len(data)))
 	for i, e := range data {
 		msg[i+4] = e
 	}
@@ -85,24 +88,10 @@ func unpackMessage(data []byte) ([]byte, []byte) {
 		return []byte{}, []byte{}
 	}
 
-	length := binary.LittleEndian.Uint32(data[:4])
+	length := binary.BigEndian.Uint32(data[:4])
 	if uint32(len(data)) < 4+length {
 		return []byte{}, []byte{}
 	}
 
 	return data[4:length], data[length:]
-}
-
-func readHeader(conn net.Conn) (*pb.Header, error) {
-	data, err := ReadMessage(conn)
-	if err != nil {
-		return nil, err
-	}
-
-	msg := &pb.Header{}
-	if err := proto.Unmarshal(data, msg); err != nil {
-		return nil, err
-	}
-
-	return msg, nil
 }

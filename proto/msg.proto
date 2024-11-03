@@ -1,6 +1,5 @@
 syntax = "proto3";
 package package;
-import "google/protobuf/any.proto";
 option go_package = "/proto";
 
 enum Status {
@@ -32,6 +31,10 @@ message Finger {
 
 message URL {
   string url = 1;
+}
+
+message UrlBatch {
+  repeated string url = 1;
 }
 
 message DispatcherRoute {

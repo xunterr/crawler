@@ -58,8 +58,6 @@ func main() {
 		return
 	}
 
-	time.Sleep(5000 * time.Millisecond)
-
 	fmt.Printf("Node to bootstrap from: %s\n", bootstrapNode)
 	if bootstrapNode != "" {
 		err := dispatcher.Bootstrap(bootstrapNode)
@@ -79,7 +77,7 @@ func main() {
 	}()
 
 	if seed != "" {
-		err = dispatcher.Dispatch(*seedUrl)
+		err = dispatcher.Dispatch(seedUrl)
 		if err != nil {
 			log.Fatalln(err)
 			return
@@ -97,7 +95,6 @@ func main() {
 		}
 
 		go func() {
-
 			time.Sleep(time.Until(accessAt))
 			// log.Printf("Crawling %s", url.Hostname())
 

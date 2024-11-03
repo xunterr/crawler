@@ -2,6 +2,7 @@ package net
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -27,19 +28,58 @@ func NewPeer(router *Router) *Peer {
 	}
 }
 
-type Handler func(context.Context, *Conn)
+type HandlerType int
+
+const (
+	RequestHandler HandlerType = iota
+	StreamHandler
+)
+
+type RequestHandlerFunc func(context.Context, *Request, *ResponseWriter)
+type StreamHandlerFunc func(context.Context, *Stream, chan []byte, *ResponseWriter)
+
+type ResponseWriter struct {
+	c net.Conn
+}
 
 type Router struct {
-	handlers map[string]Handler
+	requestHandlers map[string]RequestHandlerFunc
+	streamHandlers  map[string]StreamHandlerFunc
 }
 
 func NewRouter() *Router {
 	return &Router{
-		handlers: map[string]Handler{},
+		requestHandlers: make(map[string]RequestHandlerFunc),
+		streamHandlers:  make(map[string]StreamHandlerFunc),
 	}
 }
 
-func (p *Peer) Dial(scope string, addr string) (*Conn, error) {
+func newResponseWriter(c net.Conn) *ResponseWriter {
+	return &ResponseWriter{c}
+}
+
+func (rw *ResponseWriter) Response(isOk bool, data []byte) error {
+	res := &Response{
+		IsError: !isOk,
+		Payload: data,
+	}
+
+	resBytes := res.Marshal()
+	msg := &Message{
+		Length:  uint32(len(resBytes)),
+		Version: 1,
+		Type:    ResponseMsg,
+		Data:    resBytes,
+	}
+
+	msgBytes := msg.Marshal()
+	_, err := rw.c.Write(msgBytes)
+
+	rw.c.Close()
+	return err
+}
+
+func (p *Peer) Dial(addr string) (net.Conn, error) {
 	p.mu.Lock()
 	session, ok := p.connPool[addr]
 	p.mu.Unlock()
@@ -65,13 +105,33 @@ func (p *Peer) Dial(scope string, addr string) (*Conn, error) {
 		return nil, err
 	}
 
-	sendHeader(scope, stream)
+	return stream, nil
+}
 
-	return &Conn{
-		Remote: session.Addr(),
-		Scope:  scope,
-		stream: stream,
-	}, nil
+func (p *Peer) OpenStream(scope string, addr string) (net.Conn, error) {
+	c, err := p.Dial(addr)
+	if err != nil {
+		return nil, err
+	}
+
+	stream := &Stream{
+		Scope: scope,
+	}
+
+	streamBytes := stream.Marshal()
+	msg := &Message{
+		Length:  uint32(len(streamBytes)),
+		Type:    StreamMsg,
+		Version: 1,
+		Data:    streamBytes,
+	}
+
+	_, err = c.Write(msg.Marshal())
+	if err != nil {
+		return nil, err
+	}
+
+	return c, nil
 }
 
 func (p *Peer) Listen(ctx context.Context, addr string) error {
@@ -124,34 +184,77 @@ func (p *Peer) handleSession(session *yamux.Session) error {
 			continue
 		}
 
-		header, err := readHeader(stream)
+		err = p.handleRequest(context.Background(), stream)
 		if err != nil {
-			log.Println(err.Error())
-			continue
+			return err
 		}
-
-		conn := Conn{
-			Remote: stream.RemoteAddr(),
-			Scope:  header.GetScope(),
-			stream: stream,
-		}
-
-		p.router.route(context.Background(), &conn)
 	}
 
 	return nil
 }
 
-func (r *Router) route(ctx context.Context, conn *Conn) {
-	handler, ok := r.handlers[conn.Scope]
-	if !ok {
-		log.Printf("No handler found for scope %s", conn.Scope)
-		return
+func (p *Peer) handleRequest(ctx context.Context, c net.Conn) error {
+	msg, err := ParseMessage(c)
+	if err != nil {
+		return err
 	}
 
-	handler(ctx, conn)
+	rw := newResponseWriter(c)
+
+	switch msg.Type {
+	case RequestMsg:
+		req, err := ParseRequest(msg.Data)
+		if err != nil {
+			return err
+		}
+		p.router.routeRequest(ctx, rw, req, req.Scope)
+	case StreamMsg:
+		st, err := ParseStream(msg.Data)
+		if err != nil {
+			return err
+		}
+
+		stream := p.handleStream(ctx, c)
+		p.router.routeStream(ctx, rw, st, stream, st.Scope)
+	default:
+		return errors.New("Unsupported request message type")
+	}
+
+	return nil
 }
 
-func (r *Router) AddHandler(scope string, handler Handler) {
-	r.handlers[scope] = handler
+func (p *Peer) handleStream(ctx context.Context, c net.Conn) chan []byte {
+	stream := make(chan []byte)
+	go func() {
+		data, err := readData(c)
+		if err != nil {
+			stream <- nil
+			return
+		}
+
+		stream <- data
+	}()
+	return stream
+}
+
+func (r *Router) routeRequest(ctx context.Context, rw *ResponseWriter, req *Request, scope string) {
+	handler, ok := r.requestHandlers[scope]
+	if ok {
+		handler(ctx, req, rw)
+	}
+}
+
+func (r *Router) routeStream(ctx context.Context, rw *ResponseWriter, stream *Stream, data chan []byte, scope string) {
+	handler, ok := r.streamHandlers[scope]
+	if ok {
+		go handler(ctx, stream, data, rw)
+	}
+}
+
+func (r *Router) AddStreamHandler(scope string, handler StreamHandlerFunc) {
+	r.streamHandlers[scope] = handler
+}
+
+func (r *Router) AddRequestHandler(scope string, handler RequestHandlerFunc) {
+	r.requestHandlers[scope] = handler
 }
