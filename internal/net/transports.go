@@ -97,11 +97,11 @@ func ParseRequest(data []byte) (*Request, error) {
 
 func readString(data []byte) (uint, string) {
 	curr := 0
-	for data[curr] != '\n' && curr < len(data) {
+	for curr < len(data) && data[curr] != '\n' {
 		curr++
 	}
 	str := string(data[:curr])
-	return uint(curr), str
+	return uint(curr + 1), str
 }
 
 func ParseResponse(data []byte) (*Response, error) {
@@ -142,6 +142,7 @@ func (r *Request) Size() int {
 func (r *Request) Marshal() []byte {
 	var res []byte
 	res = append(res, []byte(r.Scope)...)
+	res = append(res, '\n')
 	res = append(res, r.Payload...)
 	return res
 }
