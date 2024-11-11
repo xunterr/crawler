@@ -29,6 +29,10 @@ message Finger {
   Node node = 2;
 }
 
+message SuccList {
+  repeated Node node = 1;
+}
+
 message URL {
   string url = 1;
 }

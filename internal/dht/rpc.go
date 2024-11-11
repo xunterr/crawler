@@ -2,6 +2,7 @@ package dht
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net"
 
@@ -12,15 +13,18 @@ import (
 
 var (
 	FIND_SUCCESSOR     string = "dht.findSuccessor"
-	FIND_CLOSEST       string = "dht.findClosestFinger"
 	UPDATE_PREDECESSOR string = "dht.updatePredecessor"
 	UPDATE_FINGER      string = "dht.updateFinger"
+	GET_SUCC_LIST      string = "dht.getSuccList"
+	PING               string = "dht.ping"
 )
 
 func (d *DHT) registerHandlers(router *p2p.Router) {
 	router.AddRequestHandler(FIND_SUCCESSOR, d.findSuccessorHandler)
 	router.AddRequestHandler(UPDATE_PREDECESSOR, d.updatePredecessorHandler)
 	router.AddRequestHandler(UPDATE_FINGER, d.updateFingerHandler)
+	router.AddRequestHandler(GET_SUCC_LIST, d.getSuccListHandler)
+	router.AddRequestHandler(PING, d.pingHandler)
 }
 
 func (d *DHT) findSuccessorRPC(node *Node, key []byte) (*Node, error) {
@@ -31,25 +35,6 @@ func (d *DHT) findSuccessorRPC(node *Node, key []byte) (*Node, error) {
 	res := &pb.Node{}
 
 	err := d.peer.CallProto(node.Addr.String(), FIND_SUCCESSOR, req, res)
-	if err != nil {
-		return nil, err
-	}
-
-	a, err := net.ResolveTCPAddr("tcp", res.Addr)
-	return &Node{
-		Id:   res.Id,
-		Addr: a,
-	}, err
-}
-
-func (d *DHT) findClosestFingerRPC(node *Node, key []byte) (*Node, error) {
-	req := &pb.Key{
-		Key: key,
-	}
-
-	res := &pb.Node{}
-
-	err := d.peer.CallProto(node.Addr.String(), FIND_CLOSEST, req, res)
 	if err != nil {
 		return nil, err
 	}
@@ -100,6 +85,55 @@ func (d *DHT) updateFingerRPC(n *Node, finger *Node, i int) error {
 	return nil
 }
 
+func (d *DHT) getSuccListRPC(n *Node) ([]*Node, error) {
+	req := &p2p.Request{
+		Scope:   GET_SUCC_LIST,
+		Payload: []byte{},
+	}
+
+	res, err := d.peer.Call(n.Addr.String(), req)
+	if err != nil {
+		return nil, err
+	}
+
+	if res.IsError {
+		return nil, errors.New(string(res.Payload))
+	}
+
+	succList := &pb.SuccList{}
+	err = proto.Unmarshal(res.Payload, succList)
+	if err != nil {
+		return nil, err
+	}
+
+	list := make([]*Node, len(succList.Node))
+	for i, e := range succList.Node {
+		list[i], err = ToNode(e.Addr)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return list, err
+}
+
+func (d *DHT) pingRPC(n *Node) error {
+	req := &p2p.Request{
+		Scope:   PING,
+		Payload: []byte("PING"),
+	}
+
+	res, err := d.peer.Call(n.Addr.String(), req)
+	if err != nil {
+		return err
+	}
+
+	if res.IsError {
+		return errors.New("Node returned error on ping")
+	}
+	return nil
+}
+
 func (d *DHT) findSuccessorHandler(ctx context.Context, req *p2p.Request, rw *p2p.ResponseWriter) {
 	msg := &pb.Key{}
 	if err := proto.Unmarshal(req.Payload, msg); err != nil {
@@ -133,12 +167,14 @@ func (d *DHT) findSuccessorHandler(ctx context.Context, req *p2p.Request, rw *p2
 func (d *DHT) updatePredecessorHandler(ctx context.Context, req *p2p.Request, rw *p2p.ResponseWriter) {
 	msg := &pb.Node{}
 	if err := proto.Unmarshal(req.Payload, msg); err != nil {
+		log.Println(err.Error())
 		rw.Response(false, []byte{})
 		return
 	}
 
 	newPred, err := ToNode(msg.Addr)
 	if err != nil {
+		log.Println(err.Error())
 		rw.Response(false, []byte{})
 		return
 	}
@@ -153,6 +189,7 @@ func (d *DHT) updatePredecessorHandler(ctx context.Context, req *p2p.Request, rw
 
 	data, err := proto.Marshal(res)
 	if err != nil {
+		log.Println(err.Error())
 		rw.Response(false, []byte{})
 		return
 	}
@@ -175,4 +212,30 @@ func (d *DHT) updateFingerHandler(ctx context.Context, req *p2p.Request, rw *p2p
 
 	d.updateFinger(int(msg.I), node)
 	rw.Response(true, []byte{})
+}
+
+func (d *DHT) getSuccListHandler(ctx context.Context, req *p2p.Request, rw *p2p.ResponseWriter) {
+	nodes := make([]*pb.Node, len(d.succList))
+	for i, e := range d.succList {
+		nodes[i] = &pb.Node{
+			Id:   e.Id,
+			Addr: e.Addr.String(),
+		}
+	}
+
+	succList := &pb.SuccList{
+		Node: nodes,
+	}
+
+	res, err := proto.Marshal(succList)
+	if err != nil {
+		rw.Response(false, []byte(err.Error()))
+		return
+	}
+
+	rw.Response(true, res)
+}
+
+func (d *DHT) pingHandler(ctx context.Context, req *p2p.Request, rw *p2p.ResponseWriter) {
+	rw.Response(true, []byte("PONG"))
 }

@@ -36,7 +36,13 @@ type Dispatcher struct {
 }
 
 func NewDispatcher(peer *p2p.Peer, router *p2p.Router, callback UrlDiscoveredCallback, conf DispatcherConfig) (*Dispatcher, error) {
-	dht, err := dht.NewDHT(peer, router, conf.Addr)
+	dhtConf := dht.DhtConfig{
+		Addr:               conf.Addr,
+		SuccListLength:     2,
+		StabilizeInterval:  10_000,
+		FixFingersInterval: 10_000,
+	}
+	dht, err := dht.NewDHT(peer, router, dhtConf)
 	if err != nil {
 		return nil, err
 	}

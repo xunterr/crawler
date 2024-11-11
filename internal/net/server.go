@@ -103,6 +103,9 @@ func (p *Peer) Dial(addr string) (net.Conn, error) {
 
 	stream, err := session.Open()
 	if err != nil {
+		log.Printf("Closing session with %s", addr)
+		session.Close()          //return to this later
+		delete(p.connPool, addr) //drop the session and redial later?
 		return nil, err
 	}
 
@@ -121,6 +124,14 @@ func (p *Peer) CallProto(addr string, scope string, req proto.Message, res proto
 	}
 
 	response, err := p.Call(addr, request)
+
+	if err != nil {
+		return err
+	}
+
+	if response.IsError {
+		return errors.New(fmt.Sprintf("Remote node %s returned error: %s", addr, string(response.Payload)))
+	}
 
 	return proto.Unmarshal(response.Payload, res)
 }
@@ -233,10 +244,12 @@ func (p *Peer) handleSession(session *yamux.Session) error {
 			continue
 		}
 
-		err = p.handleRequest(context.Background(), stream)
-		if err != nil {
-			return err
-		}
+		go func() {
+			err = p.handleRequest(context.Background(), stream)
+			if err != nil {
+				log.Println(err.Error())
+			}
+		}()
 	}
 
 	return nil
@@ -287,6 +300,7 @@ func (p *Peer) handleStream(ctx context.Context, c net.Conn) chan []byte {
 }
 
 func (r *Router) routeRequest(ctx context.Context, rw *ResponseWriter, req *Request, scope string) {
+	log.Println(scope)
 	handler, ok := r.requestHandlers[scope]
 	if ok {
 		handler(ctx, req, rw)
