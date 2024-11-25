@@ -104,10 +104,10 @@ func NewBfFrontier(qp QueueProvider) *BfFrontier {
 	return f
 }
 
-func (f *BfFrontier) Get() (url.URL, time.Time, error) {
+func (f *BfFrontier) Get() (*url.URL, time.Time, error) {
 	queueIndex, accessAt, ok := f.getNextQueue()
 	if !ok {
-		return url.URL{}, time.Time{}, errors.New("Failed to get new queue index")
+		return nil, time.Time{}, errors.New("Failed to get new queue index")
 	}
 
 	f.qmMu.Lock()
@@ -131,10 +131,10 @@ func (f *BfFrontier) Get() (url.URL, time.Time, error) {
 		return f.Get()
 	}
 
-	return *url, accessAt, nil
+	return url, accessAt, nil
 }
 
-func (f *BfFrontier) Processed(url url.URL, ttr time.Duration) {
+func (f *BfFrontier) Processed(url *url.URL, ttr time.Duration) {
 	f.rtMu.Lock()
 	f.responseTime[url.Hostname()] = ttr
 	f.rtMu.Unlock()
@@ -196,7 +196,6 @@ func (f *BfFrontier) wakeInactiveQueue() {
 	f.aqMu.Lock()
 	f.activeQueues += 1
 	f.aqMu.Unlock()
-	println(f.activeQueues)
 }
 
 func (f *BfFrontier) canAddNewQueue() bool {
@@ -239,7 +238,7 @@ func (f *BfFrontier) setNextQueue(queueIndex string, at time.Time) {
 	f.block.L.Unlock()
 }
 
-func (f *BfFrontier) Put(url url.URL) {
+func (f *BfFrontier) Put(url *url.URL) {
 	if f.bloom.Test([]byte(url.String())) {
 		return
 	}

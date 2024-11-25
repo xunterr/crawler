@@ -1,0 +1,47 @@
+syntax = "proto3";
+package package;
+option go_package = "/proto";
+
+enum Status {
+  OK = 0;
+  ACCEPTED = 1;
+  ERROR = 2;
+}
+
+message Header {
+  string scope = 1;
+}
+
+message Error {
+}
+
+message Key {
+  bytes key = 1;
+}
+
+message Node {
+  bytes id = 1;
+  string addr = 2;
+}
+
+message Finger {
+  int64 i = 1;
+  Node node = 2;
+}
+
+message SuccList {
+  repeated Node node = 1;
+}
+
+message URL {
+  string url = 1;
+}
+
+message UrlBatch {
+  repeated string url = 1;
+}
+
+message DispatcherRoute {
+  string key = 1;
+  string url = 2;
+}

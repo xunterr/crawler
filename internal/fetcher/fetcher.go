@@ -7,23 +7,23 @@ import (
 
 type Response struct {
 	TTR   time.Duration
-	Links []url.URL
+	Links []*url.URL
 }
 
 type Fetcher interface {
-	Fetch(url.URL) (Response, error)
+	Fetch(*url.URL) (Response, error)
 }
 
 type DefaultFetcher struct{}
 
-func (df *DefaultFetcher) Fetch(page url.URL) (Response, error) {
+func (df *DefaultFetcher) Fetch(page *url.URL) (Response, error) {
 	data, ttr, err := get(page)
 	if err != nil {
 		return Response{}, err
 	}
 
 	links := parseLinks(data)
-	var linksNormalized []url.URL
+	var linksNormalized []*url.URL
 
 	for _, e := range links {
 		linksNormalized = append(linksNormalized, normalize(page, e))

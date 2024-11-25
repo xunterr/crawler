@@ -2,105 +2,95 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"flag"
 	"fmt"
 	"log"
 	"net/url"
+	"sync"
+	"sync/atomic"
 	"time"
 
-	"sync/atomic"
-
-	golog "github.com/ipfs/go-log/v2"
-	"github.com/libp2p/go-libp2p"
-	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/paulbellamy/ratecounter"
+	"github.com/xunterr/crawler/internal/dispatcher"
 	"github.com/xunterr/crawler/internal/fetcher"
 	"github.com/xunterr/crawler/internal/frontier"
+	p2p "github.com/xunterr/crawler/internal/net"
 )
 
+var (
+	addr          string = "127.0.0.1:6969"
+	bootstrapNode string = ""
+	seed          string = ""
+)
+
+func init() {
+	flag.StringVar(&addr, "addr", addr, "defines node address")
+	flag.StringVar(&bootstrapNode, "node", "", "node to bootstrap with")
+	flag.StringVar(&seed, "u", "", "seed url")
+}
+
 func main() {
-	bootstrapNode := flag.String("b", "", "bootstrap node")
-	seedUrl := flag.String("u", "", "seed url")
-	port := flag.Int("p", 6969, "port number")
+	var wg sync.WaitGroup
+	wg.Add(1)
 	flag.Parse()
 
-	golog.SetAllLoggers(golog.LevelError)
-	privKey, _, err := crypto.GenerateKeyPairWithReader(crypto.RSA, 2048, rand.Reader)
-
+	seedUrl, err := url.Parse(seed)
 	if err != nil {
-		log.Fatalln(err)
+		log.Println("Can't parse seed url!")
 		return
 	}
 
-	opts := []libp2p.Option{
-		libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", *port)),
-		libp2p.Identity(privKey),
-		libp2p.DefaultTransports,
-		libp2p.DefaultMuxers,
-		libp2p.DefaultSecurity,
-		libp2p.NATPortMap(),
-	}
+	router := p2p.NewRouter()
+	peer := p2p.NewPeer(router)
 
-	//	qp, err := frontier.NewPersistentQueueProvider("abc")
-	//	if err != nil {
-	//		log.Panicf(err.Error())
-	//		return
-	//	}
+	go peer.Listen(context.Background(), addr)
+
 	qp := frontier.InMemoryQueueProvider{}
 	frontier := frontier.NewBfFrontier(qp)
 
-	//	queues, err := qp.GetAll()
-	//	if err != nil {
-	//		log.Panicln(err.Error())
-	//		return
-	//	}
-	//	frontier.LoadQueues(queues)
+	dispatcherConf := dispatcher.DispatcherConfig{
+		Addr:          addr,
+		BatchPeriodMs: 10_000,
+	}
 
-	dispatcher, err := SetupDispatcher(context.Background(), opts, frontier.Put)
+	dispatcher, err := dispatcher.NewDispatcher(peer, router, frontier.Put, dispatcherConf)
 	if err != nil {
-		log.Fatalf("Failed to setup dispatcher: %s", err.Error())
+		log.Printf("Failed to init dispatcher: %s", err.Error())
 		return
 	}
 
-	if *bootstrapNode != "" {
-		dispatcher.BootstrapFrom(context.Background(), []string{*bootstrapNode})
+	fmt.Printf("Node to bootstrap from: %s\n", bootstrapNode)
+	if bootstrapNode != "" {
+		err := dispatcher.Bootstrap(bootstrapNode)
+		if err != nil {
+			log.Printf("Failed to bootstrap from node %s", bootstrapNode)
+		}
 	}
 
-	addresses, err := dispatcher.GetAddress()
-	if err != nil {
-		log.Fatalf("Error building address: %s", err.Error())
-		return
+	if seed != "" {
+		err = dispatcher.Dispatch(seedUrl)
+		if err != nil {
+			log.Fatalln(err)
+			return
+		}
 	}
 
-	for _, e := range addresses {
-		log.Println("I can be reached at: %s", e.String())
-	}
+	fetcher := fetcher.DefaultFetcher{}
+	loop(dispatcher, frontier, &fetcher)
 
-	time.Sleep(500 * time.Millisecond)
+	wg.Wait()
+}
 
-	parsedUrl, err := url.Parse(*seedUrl)
-	if err != nil {
-		log.Fatalln("Failed to parse url")
-		return
-	}
-
+func loop(dispatcher *dispatcher.Dispatcher, frontier *frontier.BfFrontier, fetcher fetcher.Fetcher) {
 	counter := ratecounter.NewRateCounter(1 * time.Second)
 	var total atomic.Uint64
+
 	go func() {
 		t := time.Tick(5 * time.Second)
 		for range t {
 			log.Printf("Ops/sec: %d; Total: %d", counter.Rate(), total.Load())
 		}
 	}()
-
-	err = dispatcher.Dispatch(*parsedUrl)
-	if err != nil {
-		log.Fatalln(err)
-		return
-	}
-
-	fetcher := fetcher.DefaultFetcher{}
 
 	for {
 		time.Sleep(50 * time.Millisecond)
@@ -111,7 +101,6 @@ func main() {
 		}
 
 		go func() {
-
 			time.Sleep(time.Until(accessAt))
 			// log.Printf("Crawling %s", url.Hostname())
 

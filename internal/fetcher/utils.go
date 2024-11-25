@@ -11,7 +11,7 @@ import (
 	"github.com/opesun/goquery"
 )
 
-func get(link url.URL) ([]byte, time.Duration, error) {
+func get(link *url.URL) ([]byte, time.Duration, error) {
 	start := time.Now()
 	resp, err := http.Get(link.String())
 	if err != nil {
@@ -28,7 +28,7 @@ func get(link url.URL) ([]byte, time.Duration, error) {
 	return data, ttr, nil
 }
 
-func parseLinks(input []byte) (links []url.URL) {
+func parseLinks(input []byte) (links []*url.URL) {
 	x, err := goquery.ParseString(string(input))
 	if err == nil {
 		for _, href := range x.Find("a").Attrs("href") {
@@ -41,13 +41,13 @@ func parseLinks(input []byte) (links []url.URL) {
 				continue
 			}
 
-			links = append(links, *link)
+			links = append(links, link)
 		}
 	}
 	return
 }
 
-func normalize(prev url.URL, input url.URL) url.URL {
+func normalize(prev *url.URL, input *url.URL) *url.URL {
 	if input.Host == "" {
 		input.Host = prev.Host
 	}
