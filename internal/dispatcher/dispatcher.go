@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net/url"
 	"sync"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"github.com/xunterr/crawler/internal/dht"
 	p2p "github.com/xunterr/crawler/internal/net"
 	pb "github.com/xunterr/crawler/proto"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -26,6 +26,8 @@ type DispatcherConfig struct {
 }
 
 type Dispatcher struct {
+	logger *zap.SugaredLogger
+
 	peer        *p2p.Peer
 	dht         *dht.DHT
 	urlCallback UrlDiscoveredCallback
@@ -35,23 +37,26 @@ type Dispatcher struct {
 	batchMu sync.Mutex
 }
 
-func NewDispatcher(peer *p2p.Peer, router *p2p.Router, callback UrlDiscoveredCallback, conf DispatcherConfig) (*Dispatcher, error) {
+func NewDispatcher(logger *zap.Logger, peer *p2p.Peer, router *p2p.Router, callback UrlDiscoveredCallback, conf DispatcherConfig) (*Dispatcher, error) {
 	dhtConf := dht.DhtConfig{
 		Addr:               conf.Addr,
 		SuccListLength:     2,
 		StabilizeInterval:  10_000,
 		FixFingersInterval: 10_000,
 	}
-	dht, err := dht.NewDHT(peer, router, dhtConf)
+	dht, err := dht.NewDHT(logger, peer, router, dhtConf)
 	if err != nil {
 		return nil, err
 	}
 
 	d := &Dispatcher{
+		logger:      logger.Sugar(),
 		peer:        peer,
 		dht:         dht,
 		urlCallback: callback,
 		batches:     make(map[string][]string),
+
+		conf: conf,
 	}
 
 	router.AddRequestHandler(SCOPE, d.urlFoundHandler)
@@ -101,9 +106,10 @@ func (d *Dispatcher) urlFoundHandler(ctx context.Context, data *p2p.Request, rw 
 
 func (d *Dispatcher) createBatch(node string, u *url.URL) error {
 	d.batchMu.Lock()
-	d.batchMu.Unlock()
+	defer d.batchMu.Unlock()
 
 	batch, ok := d.batches[node]
+
 	if !ok {
 		batch = make([]string, 0)
 	}
@@ -130,11 +136,11 @@ func (d *Dispatcher) sendBatches(ctx context.Context) {
 	d.batchMu.Lock()
 	defer d.batchMu.Unlock()
 	for k, v := range d.batches {
-		log.Printf("Sending batch to node %s", k)
+		d.logger.Infof("Sending batch to node %s", k)
 
 		err := d.writeBatch(ctx, k, SCOPE, v)
 		if err != nil {
-			log.Printf("Failed to write to node %s: %s", k, err.Error())
+			d.logger.Infow("Failed to write to node %s: %s", k, err.Error())
 			continue
 		}
 

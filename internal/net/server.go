@@ -4,16 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"sync"
 
 	"github.com/hashicorp/yamux"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
 type Peer struct {
-	quit chan struct{}
+	logger *zap.SugaredLogger
+	quit   chan struct{}
 
 	router *Router
 
@@ -21,10 +22,11 @@ type Peer struct {
 	mu       sync.Mutex
 }
 
-func NewPeer(router *Router) *Peer {
+func NewPeer(logger *zap.Logger, router *Router) *Peer {
 	return &Peer{
 		quit:     make(chan struct{}),
 		router:   router,
+		logger:   logger.Sugar(),
 		connPool: make(map[string]*yamux.Session),
 	}
 }
@@ -85,7 +87,6 @@ func (p *Peer) Dial(addr string) (net.Conn, error) {
 	session, ok := p.connPool[addr]
 	p.mu.Unlock()
 	if !ok {
-		log.Printf("Creating new session and connection with %s", addr)
 		conn, err := net.Dial("tcp", addr)
 		if err != nil {
 			return nil, err
@@ -103,7 +104,10 @@ func (p *Peer) Dial(addr string) (net.Conn, error) {
 
 	stream, err := session.Open()
 	if err != nil {
-		log.Printf("Closing session with %s", addr)
+		p.logger.Infow(
+			"Closing session with node",
+			zap.String("node", addr),
+		)
 		session.Close()          //return to this later
 		delete(p.connPool, addr) //drop the session and redial later?
 		return nil, err
@@ -197,33 +201,32 @@ func (p *Peer) OpenStream(scope string, addr string) (net.Conn, error) {
 func (p *Peer) Listen(ctx context.Context, addr string) error {
 	var lc net.ListenConfig
 	l, err := lc.Listen(ctx, "tcp", addr)
-	fmt.Println("Starting...")
 	if err != nil {
 		return err
 	}
+	p.logger.Infof("Listening on %s", addr)
 
 	go func() {
 		<-ctx.Done()
 		close(p.quit)
-		log.Println("Shutting service down...")
+		p.logger.Infow("Shutting service down...")
 		l.Close()
 	}()
 
 	for {
 		c, err := l.Accept()
-		log.Println("New connection!")
 		if err != nil {
 			select {
 			case <-p.quit:
 				break
 			default:
-				log.Printf("Error accepting connection: %s", err.Error())
+				p.logger.Errorln("Error accepting connection: %s", err.Error())
 			}
 		}
 		go func() {
 			session, err := yamux.Server(c, nil)
 			if err != nil {
-				log.Printf("Failed to open a session: %s", err.Error())
+				p.logger.Errorf("Failed to open a session: %s", err.Error())
 				return
 			}
 
@@ -237,7 +240,7 @@ func (p *Peer) handleSession(session *yamux.Session) error {
 	for {
 		stream, err := session.Accept()
 		if err != nil {
-			log.Println(err.Error())
+			p.logger.Errorln(err.Error())
 			if session.IsClosed() {
 				break
 			}
@@ -247,7 +250,7 @@ func (p *Peer) handleSession(session *yamux.Session) error {
 		go func() {
 			err = p.handleRequest(context.Background(), stream)
 			if err != nil {
-				log.Println(err.Error())
+				p.logger.Errorln(err.Error())
 			}
 		}()
 	}
@@ -300,7 +303,6 @@ func (p *Peer) handleStream(ctx context.Context, c net.Conn) chan []byte {
 }
 
 func (r *Router) routeRequest(ctx context.Context, rw *ResponseWriter, req *Request, scope string) {
-	log.Println(scope)
 	handler, ok := r.requestHandlers[scope]
 	if ok {
 		handler(ctx, req, rw)

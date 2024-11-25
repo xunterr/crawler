@@ -3,7 +3,6 @@ package dht
 import (
 	"context"
 	"errors"
-	"log"
 	"net"
 
 	p2p "github.com/xunterr/crawler/internal/net"
@@ -79,7 +78,6 @@ func (d *DHT) updateFingerRPC(n *Node, finger *Node, i int) error {
 		Payload: reqBytes,
 	}
 
-	log.Printf("Updating %d th finger of node %s", i, n.Addr.String())
 	_, err = d.peer.Call(n.Addr.String(), req)
 
 	return nil
@@ -137,14 +135,14 @@ func (d *DHT) pingRPC(n *Node) error {
 func (d *DHT) findSuccessorHandler(ctx context.Context, req *p2p.Request, rw *p2p.ResponseWriter) {
 	msg := &pb.Key{}
 	if err := proto.Unmarshal(req.Payload, msg); err != nil {
-		log.Println(err.Error())
+		d.logger.Errorln(err.Error())
 		rw.Response(false, []byte{})
 		return
 	}
 
 	succ, err := d.FindSuccessor(msg.Key)
 	if err != nil {
-		log.Println(err.Error())
+		d.logger.Errorln(err.Error())
 		rw.Response(false, []byte{})
 		return
 	}
@@ -156,7 +154,7 @@ func (d *DHT) findSuccessorHandler(ctx context.Context, req *p2p.Request, rw *p2
 
 	data, err := proto.Marshal(res)
 	if err != nil {
-		log.Println(err.Error())
+		d.logger.Errorln(err.Error())
 		rw.Response(false, []byte{})
 		return
 	}
@@ -167,14 +165,14 @@ func (d *DHT) findSuccessorHandler(ctx context.Context, req *p2p.Request, rw *p2
 func (d *DHT) updatePredecessorHandler(ctx context.Context, req *p2p.Request, rw *p2p.ResponseWriter) {
 	msg := &pb.Node{}
 	if err := proto.Unmarshal(req.Payload, msg); err != nil {
-		log.Println(err.Error())
+		d.logger.Errorln(err.Error())
 		rw.Response(false, []byte{})
 		return
 	}
 
 	newPred, err := ToNode(msg.Addr)
 	if err != nil {
-		log.Println(err.Error())
+		d.logger.Errorln(err.Error())
 		rw.Response(false, []byte{})
 		return
 	}
@@ -189,7 +187,7 @@ func (d *DHT) updatePredecessorHandler(ctx context.Context, req *p2p.Request, rw
 
 	data, err := proto.Marshal(res)
 	if err != nil {
-		log.Println(err.Error())
+		d.logger.Errorln(err.Error())
 		rw.Response(false, []byte{})
 		return
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,6 +16,8 @@ import (
 	"github.com/xunterr/crawler/internal/fetcher"
 	"github.com/xunterr/crawler/internal/frontier"
 	p2p "github.com/xunterr/crawler/internal/net"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 var (
@@ -29,19 +32,32 @@ func init() {
 	flag.StringVar(&seed, "u", "", "seed url")
 }
 
+func initLogger(level zapcore.Level) *zap.Logger {
+	conf := zap.NewProductionEncoderConfig()
+	conf.EncodeTime = zapcore.ISO8601TimeEncoder
+	encoder := zapcore.NewConsoleEncoder(conf)
+	core := zapcore.NewCore(encoder, zapcore.AddSync(os.Stdout), level)
+	l := zap.New(core)
+	return l
+}
+
 func main() {
 	var wg sync.WaitGroup
 	wg.Add(1)
 	flag.Parse()
 
+	defaultLogger := initLogger(zapcore.InfoLevel)
+	defer defaultLogger.Sync()
+	logger := defaultLogger.Sugar()
+
 	seedUrl, err := url.Parse(seed)
 	if err != nil {
-		log.Println("Can't parse seed url!")
+		logger.Fatalln("Can't parse URL'")
 		return
 	}
 
 	router := p2p.NewRouter()
-	peer := p2p.NewPeer(router)
+	peer := p2p.NewPeer(defaultLogger, router)
 
 	go peer.Listen(context.Background(), addr)
 
@@ -50,12 +66,12 @@ func main() {
 
 	dispatcherConf := dispatcher.DispatcherConfig{
 		Addr:          addr,
-		BatchPeriodMs: 10_000,
+		BatchPeriodMs: 30_000,
 	}
 
-	dispatcher, err := dispatcher.NewDispatcher(peer, router, frontier.Put, dispatcherConf)
+	dispatcher, err := dispatcher.NewDispatcher(defaultLogger, peer, router, frontier.Put, dispatcherConf)
 	if err != nil {
-		log.Printf("Failed to init dispatcher: %s", err.Error())
+		logger.Infof("Failed to init dispatcher: %s", err.Error())
 		return
 	}
 
@@ -63,32 +79,32 @@ func main() {
 	if bootstrapNode != "" {
 		err := dispatcher.Bootstrap(bootstrapNode)
 		if err != nil {
-			log.Printf("Failed to bootstrap from node %s", bootstrapNode)
+			logger.Infof("Failed to bootstrap from node %s", bootstrapNode)
 		}
 	}
 
 	if seed != "" {
 		err = dispatcher.Dispatch(seedUrl)
 		if err != nil {
-			log.Fatalln(err)
+			logger.Fatalln(err)
 			return
 		}
 	}
 
 	fetcher := fetcher.DefaultFetcher{}
-	loop(dispatcher, frontier, &fetcher)
+	loop(logger, dispatcher, frontier, &fetcher)
 
 	wg.Wait()
 }
 
-func loop(dispatcher *dispatcher.Dispatcher, frontier *frontier.BfFrontier, fetcher fetcher.Fetcher) {
+func loop(logger *zap.SugaredLogger, dispatcher *dispatcher.Dispatcher, frontier *frontier.BfFrontier, fetcher fetcher.Fetcher) {
 	counter := ratecounter.NewRateCounter(1 * time.Second)
 	var total atomic.Uint64
 
 	go func() {
 		t := time.Tick(5 * time.Second)
 		for range t {
-			log.Printf("Ops/sec: %d; Total: %d", counter.Rate(), total.Load())
+			logger.Infof("Ops/sec: %d; Total: %d", counter.Rate(), total.Load())
 		}
 	}()
 
@@ -102,7 +118,6 @@ func loop(dispatcher *dispatcher.Dispatcher, frontier *frontier.BfFrontier, fetc
 
 		go func() {
 			time.Sleep(time.Until(accessAt))
-			// log.Printf("Crawling %s", url.Hostname())
 
 			resp, err := fetcher.Fetch(url)
 			if err != nil {

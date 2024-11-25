@@ -55,6 +55,7 @@ func ParseMessage(r io.Reader) (*Message, error) {
 	}
 
 	if uint32(n) != length+5 {
+		log.Printf("Length of buf: %d", len(buf))
 		log.Printf("Actual data length (%d) is less than declared (%d)", n, length)
 	}
 
