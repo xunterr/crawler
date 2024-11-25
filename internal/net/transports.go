@@ -49,7 +49,7 @@ func ParseMessage(r io.Reader) (*Message, error) {
 	}
 
 	buf := make([]byte, length+5)
-	n, err := r.Read(buf)
+	n, err := io.ReadFull(r, buf)
 	if err != nil {
 		return nil, err
 	}

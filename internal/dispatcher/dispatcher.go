@@ -164,6 +164,9 @@ func (d *Dispatcher) writeBatch(ctx context.Context, node string, scope string, 
 	}
 
 	res, err := d.peer.Call(node, req)
+	if err != nil {
+		return err
+	}
 	if res.IsError {
 		return errors.New(fmt.Sprintf("Peer %s returned error on batch send: %s", node, string(res.Payload)))
 	}
