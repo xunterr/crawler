@@ -13,6 +13,12 @@ import (
 	"github.com/xunterr/crawler/pkg/queues"
 )
 
+type Frontier interface {
+	Get() (*url.URL, time.Time, error)
+	MarkProcessed(*url.URL, time.Duration)
+	Put(*url.URL) error
+}
+
 type QueueProvider interface {
 	Get(string) (queues.Queue[Url], error)
 }
@@ -135,7 +141,7 @@ func (f *BfFrontier) Get() (*url.URL, time.Time, error) {
 	return url, accessAt, nil
 }
 
-func (f *BfFrontier) Processed(url *url.URL, ttr time.Duration) {
+func (f *BfFrontier) MarkProcessed(url *url.URL, ttr time.Duration) {
 	f.rtMu.Lock()
 	f.responseTime[url.Hostname()] = ttr
 	f.rtMu.Unlock()
@@ -259,10 +265,9 @@ func (f *BfFrontier) setNextQueue(queueIndex string, at time.Time) {
 	f.block.L.Unlock()
 }
 
-func (f *BfFrontier) Put(url *url.URL) {
+func (f *BfFrontier) Put(url *url.URL) error {
 	if f.checkBloom(url.Hostname(), []byte(url.String())) {
-		println("seen")
-		return
+		return nil
 	}
 
 	f.qmMu.Lock()
@@ -273,8 +278,7 @@ func (f *BfFrontier) Put(url *url.URL) {
 		//no mapping, create one
 		q, err := f.queueProvider.Get(url.Hostname())
 		if err != nil {
-			log.Printf("Failed to create new queue: %s", err.Error())
-			return
+			return err
 		}
 
 		queue = f.addNewQueue(url.Hostname(), q, 20)
@@ -284,6 +288,7 @@ func (f *BfFrontier) Put(url *url.URL) {
 		Url:    url.String(),
 		Weight: 1,
 	})
+	return nil
 }
 
 func (f *BfFrontier) addNewQueue(host string, q queues.Queue[Url], limit uint64) *FrontierQueue {

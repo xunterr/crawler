@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/paulbellamy/ratecounter"
-	"github.com/xunterr/crawler/internal/dispatcher"
 	"github.com/xunterr/crawler/internal/fetcher"
 	"github.com/xunterr/crawler/internal/frontier"
 	p2p "github.com/xunterr/crawler/internal/net"
@@ -62,29 +61,29 @@ func main() {
 	go peer.Listen(context.Background(), addr)
 
 	qp := frontier.InMemoryQueueProvider{}
-	frontier := frontier.NewBfFrontier(qp)
+	bfFrontier := frontier.NewBfFrontier(qp)
 
-	dispatcherConf := dispatcher.DispatcherConfig{
+	dispatcherConf := frontier.DistributedFrontierConf{
 		Addr:          addr,
 		BatchPeriodMs: 30_000,
 	}
 
-	dispatcher, err := dispatcher.NewDispatcher(defaultLogger, peer, router, frontier.Put, dispatcherConf)
+	distributedFrontier, err := frontier.NewDistributed(defaultLogger, peer, router, bfFrontier, dispatcherConf)
 	if err != nil {
-		logger.Infof("Failed to init dispatcher: %s", err.Error())
+		logger.Fatalln("Failed to init dispatcher: %s", err.Error())
 		return
 	}
 
 	fmt.Printf("Node to bootstrap from: %s\n", bootstrapNode)
 	if bootstrapNode != "" {
-		err := dispatcher.Bootstrap(bootstrapNode)
+		err := distributedFrontier.Bootstrap(bootstrapNode)
 		if err != nil {
 			logger.Infof("Failed to bootstrap from node %s", bootstrapNode)
 		}
 	}
 
 	if seed != "" {
-		err = dispatcher.Dispatch(seedUrl)
+		err = distributedFrontier.Put(seedUrl)
 		if err != nil {
 			logger.Fatalln(err)
 			return
@@ -92,12 +91,12 @@ func main() {
 	}
 
 	fetcher := fetcher.DefaultFetcher{}
-	loop(logger, dispatcher, frontier, &fetcher)
+	loop(logger, distributedFrontier, &fetcher)
 
 	wg.Wait()
 }
 
-func loop(logger *zap.SugaredLogger, dispatcher *dispatcher.Dispatcher, frontier *frontier.BfFrontier, fetcher fetcher.Fetcher) {
+func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fetcher fetcher.Fetcher) {
 	counter := ratecounter.NewRateCounter(1 * time.Second)
 	var total atomic.Uint64
 
@@ -124,10 +123,10 @@ func loop(logger *zap.SugaredLogger, dispatcher *dispatcher.Dispatcher, frontier
 				return
 			}
 
-			frontier.Processed(url, resp.TTR)
+			frontier.MarkProcessed(url, resp.TTR)
 
 			for _, e := range resp.Links {
-				dispatcher.Dispatch(e)
+				frontier.Put(e)
 			}
 
 			counter.Incr(1)

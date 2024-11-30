@@ -1,4 +1,4 @@
-package dispatcher
+package frontier
 
 import (
 	"bytes"
@@ -20,41 +20,43 @@ type UrlDiscoveredCallback func(url *url.URL)
 
 const SCOPE = "dispatcher.urlFound"
 
-type DispatcherConfig struct {
+type DistributedFrontierConf struct {
 	BatchPeriodMs int
 	Addr          string
 }
 
-type Dispatcher struct {
+type DistributedFrontier struct {
 	logger *zap.SugaredLogger
 
-	peer        *p2p.Peer
-	dht         *dht.DHT
-	urlCallback UrlDiscoveredCallback
-	conf        DispatcherConfig
+	peer *p2p.Peer
+	dht  *dht.DHT
+	conf DistributedFrontierConf
+
+	frontier *BfFrontier
 
 	batches map[string][]string
 	batchMu sync.Mutex
 }
 
-func NewDispatcher(logger *zap.Logger, peer *p2p.Peer, router *p2p.Router, callback UrlDiscoveredCallback, conf DispatcherConfig) (*Dispatcher, error) {
+func NewDistributed(logger *zap.Logger, peer *p2p.Peer, router *p2p.Router, frontier *BfFrontier, conf DistributedFrontierConf) (*DistributedFrontier, error) {
 	dhtConf := dht.DhtConfig{
 		Addr:               conf.Addr,
 		SuccListLength:     2,
 		StabilizeInterval:  10_000,
 		FixFingersInterval: 10_000,
 	}
+
 	dht, err := dht.NewDHT(logger, peer, router, dhtConf)
 	if err != nil {
 		return nil, err
 	}
 
-	d := &Dispatcher{
-		logger:      logger.Sugar(),
-		peer:        peer,
-		dht:         dht,
-		urlCallback: callback,
-		batches:     make(map[string][]string),
+	d := &DistributedFrontier{
+		logger:   logger.Sugar(),
+		peer:     peer,
+		dht:      dht,
+		frontier: frontier,
+		batches:  make(map[string][]string),
 
 		conf: conf,
 	}
@@ -64,7 +66,7 @@ func NewDispatcher(logger *zap.Logger, peer *p2p.Peer, router *p2p.Router, callb
 	return d, nil
 }
 
-func (d *Dispatcher) Bootstrap(addr string) error {
+func (d *DistributedFrontier) Bootstrap(addr string) error {
 	node, err := dht.ToNode(addr)
 	if err != nil {
 		return err
@@ -72,21 +74,29 @@ func (d *Dispatcher) Bootstrap(addr string) error {
 	return d.dht.Join(node)
 }
 
-func (d *Dispatcher) Dispatch(u *url.URL) error {
+func (d *DistributedFrontier) Get() (*url.URL, time.Time, error) {
+	return d.frontier.Get()
+}
+
+func (d *DistributedFrontier) MarkProcessed(u *url.URL, ttr time.Duration) {
+	d.frontier.MarkProcessed(u, ttr)
+}
+
+func (d *DistributedFrontier) Put(u *url.URL) error {
 	succ, err := d.dht.FindSuccessor(d.dht.MakeKey([]byte(u.Host)))
 	if err != nil {
 		return err
 	}
 
 	if bytes.Compare(succ.Id, d.dht.GetID()) == 0 {
-		d.urlCallback(u)
+		d.frontier.Put(u)
 		return nil
 	} else {
 		return d.createBatch(succ.Addr.String(), u)
 	}
 }
 
-func (d *Dispatcher) urlFoundHandler(ctx context.Context, data *p2p.Request, rw *p2p.ResponseWriter) {
+func (d *DistributedFrontier) urlFoundHandler(ctx context.Context, data *p2p.Request, rw *p2p.ResponseWriter) {
 	batch := &pb.UrlBatch{}
 	if err := proto.Unmarshal(data.Payload, batch); err != nil {
 		rw.Response(false, []byte{})
@@ -98,13 +108,13 @@ func (d *Dispatcher) urlFoundHandler(ctx context.Context, data *p2p.Request, rw 
 		if err != nil {
 			continue
 		}
-		d.urlCallback(url)
+		d.frontier.Put(url)
 	}
 
 	rw.Response(true, []byte{})
 }
 
-func (d *Dispatcher) createBatch(node string, u *url.URL) error {
+func (d *DistributedFrontier) createBatch(node string, u *url.URL) error {
 	d.batchMu.Lock()
 	defer d.batchMu.Unlock()
 
@@ -119,7 +129,7 @@ func (d *Dispatcher) createBatch(node string, u *url.URL) error {
 	return nil
 }
 
-func (d *Dispatcher) dispatcherLoop(ctx context.Context) {
+func (d *DistributedFrontier) dispatcherLoop(ctx context.Context) {
 	t := time.Tick(time.Duration(d.conf.BatchPeriodMs) * time.Millisecond)
 
 	for {
@@ -132,7 +142,7 @@ func (d *Dispatcher) dispatcherLoop(ctx context.Context) {
 	}
 }
 
-func (d *Dispatcher) sendBatches(ctx context.Context) {
+func (d *DistributedFrontier) sendBatches(ctx context.Context) {
 	d.batchMu.Lock()
 	defer d.batchMu.Unlock()
 	for k, v := range d.batches {
@@ -148,7 +158,7 @@ func (d *Dispatcher) sendBatches(ctx context.Context) {
 	}
 }
 
-func (d *Dispatcher) writeBatch(ctx context.Context, node string, scope string, messages []string) error {
+func (d *DistributedFrontier) writeBatch(ctx context.Context, node string, scope string, messages []string) error {
 	batch := &pb.UrlBatch{
 		Url: messages,
 	}
