@@ -296,9 +296,9 @@ func (p *Peer) handleStream(ctx context.Context, c net.Conn) chan []byte {
 }
 
 func (p *Peer) routeRequest(ctx context.Context, rw *ResponseWriter, req *Request, scope string) {
-	p.stMu.Lock()
-	defer p.stMu.Unlock()
+	p.rqMu.Lock()
 	handler, ok := p.requestHandlers[scope]
+	p.rqMu.Unlock()
 	if ok {
 		handler(ctx, req, rw)
 	}
@@ -306,21 +306,21 @@ func (p *Peer) routeRequest(ctx context.Context, rw *ResponseWriter, req *Reques
 
 func (p *Peer) routeStream(ctx context.Context, rw *ResponseWriter, stream *Stream, data chan []byte, scope string) {
 	p.stMu.Lock()
-	defer p.stMu.Unlock()
 	handler, ok := p.streamHandlers[scope]
+	p.stMu.Unlock()
 	if ok {
 		go handler(ctx, stream, data, rw)
 	}
 }
 
-func (p *Peer) AddStreamHandler(scope string, handler StreamHandlerFunc) {
-	p.stMu.Lock()
-	defer p.stMu.Unlock()
-	p.streamHandlers[scope] = handler
-}
-
 func (p *Peer) AddRequestHandler(scope string, handler RequestHandlerFunc) {
 	p.rqMu.Lock()
-	defer p.rqMu.Unlock()
 	p.requestHandlers[scope] = handler
+	p.rqMu.Unlock()
+}
+
+func (p *Peer) AddStreamHandler(scope string, handler StreamHandlerFunc) {
+	p.stMu.Lock()
+	p.streamHandlers[scope] = handler
+	p.stMu.Unlock()
 }
