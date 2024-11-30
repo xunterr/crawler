@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 
@@ -230,20 +231,37 @@ func (p *Peer) Listen(ctx context.Context, addr string) error {
 }
 
 func (p *Peer) handleSession(session *yamux.Session) error {
+	remote := session.RemoteAddr()
 	for {
 		stream, err := session.Accept()
 		if err != nil {
-			p.logger.Errorln(err.Error())
+			if err == io.EOF {
+				break
+			}
+
 			if session.IsClosed() {
 				break
 			}
+
+			p.logger.Errorw(
+				fmt.Sprintf("Error while accepting stream: %s", err.Error()),
+				"node", remote.String(),
+			)
+
 			continue
 		}
 
 		go func() {
 			err = p.handleRequest(context.Background(), stream)
 			if err != nil {
-				p.logger.Errorln(err.Error())
+				if err == io.EOF {
+					return
+				}
+
+				p.logger.Errorw(
+					fmt.Sprintf("Error while handling request: %s", err.Error()),
+					"node", remote.String(),
+				)
 			}
 		}()
 	}
