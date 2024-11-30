@@ -16,18 +16,23 @@ type Peer struct {
 	logger *zap.SugaredLogger
 	quit   chan struct{}
 
-	router *Router
-
 	connPool map[string]*yamux.Session
 	mu       sync.Mutex
+
+	rqMu            sync.Mutex
+	requestHandlers map[string]RequestHandlerFunc
+	stMu            sync.Mutex
+	streamHandlers  map[string]StreamHandlerFunc
 }
 
-func NewPeer(logger *zap.Logger, router *Router) *Peer {
+func NewPeer(logger *zap.Logger) *Peer {
 	return &Peer{
 		quit:     make(chan struct{}),
-		router:   router,
 		logger:   logger.Sugar(),
 		connPool: make(map[string]*yamux.Session),
+
+		requestHandlers: make(map[string]RequestHandlerFunc),
+		streamHandlers:  make(map[string]StreamHandlerFunc),
 	}
 }
 
@@ -43,18 +48,6 @@ type StreamHandlerFunc func(context.Context, *Stream, chan []byte, *ResponseWrit
 
 type ResponseWriter struct {
 	c net.Conn
-}
-
-type Router struct {
-	requestHandlers map[string]RequestHandlerFunc
-	streamHandlers  map[string]StreamHandlerFunc
-}
-
-func NewRouter() *Router {
-	return &Router{
-		requestHandlers: make(map[string]RequestHandlerFunc),
-		streamHandlers:  make(map[string]StreamHandlerFunc),
-	}
 }
 
 func newResponseWriter(c net.Conn) *ResponseWriter {
@@ -272,7 +265,7 @@ func (p *Peer) handleRequest(ctx context.Context, c net.Conn) error {
 		if err != nil {
 			return err
 		}
-		p.router.routeRequest(ctx, rw, req, req.Scope)
+		p.routeRequest(ctx, rw, req, req.Scope)
 	case StreamMsg:
 		st, err := ParseStream(msg.Data)
 		if err != nil {
@@ -280,7 +273,7 @@ func (p *Peer) handleRequest(ctx context.Context, c net.Conn) error {
 		}
 
 		stream := p.handleStream(ctx, c)
-		p.router.routeStream(ctx, rw, st, stream, st.Scope)
+		p.routeStream(ctx, rw, st, stream, st.Scope)
 	default:
 		return errors.New("Unsupported request message type")
 	}
@@ -302,24 +295,32 @@ func (p *Peer) handleStream(ctx context.Context, c net.Conn) chan []byte {
 	return stream
 }
 
-func (r *Router) routeRequest(ctx context.Context, rw *ResponseWriter, req *Request, scope string) {
-	handler, ok := r.requestHandlers[scope]
+func (p *Peer) routeRequest(ctx context.Context, rw *ResponseWriter, req *Request, scope string) {
+	p.stMu.Lock()
+	defer p.stMu.Unlock()
+	handler, ok := p.requestHandlers[scope]
 	if ok {
 		handler(ctx, req, rw)
 	}
 }
 
-func (r *Router) routeStream(ctx context.Context, rw *ResponseWriter, stream *Stream, data chan []byte, scope string) {
-	handler, ok := r.streamHandlers[scope]
+func (p *Peer) routeStream(ctx context.Context, rw *ResponseWriter, stream *Stream, data chan []byte, scope string) {
+	p.stMu.Lock()
+	defer p.stMu.Unlock()
+	handler, ok := p.streamHandlers[scope]
 	if ok {
 		go handler(ctx, stream, data, rw)
 	}
 }
 
-func (r *Router) AddStreamHandler(scope string, handler StreamHandlerFunc) {
-	r.streamHandlers[scope] = handler
+func (p *Peer) AddStreamHandler(scope string, handler StreamHandlerFunc) {
+	p.stMu.Lock()
+	defer p.stMu.Unlock()
+	p.streamHandlers[scope] = handler
 }
 
-func (r *Router) AddRequestHandler(scope string, handler RequestHandlerFunc) {
-	r.requestHandlers[scope] = handler
+func (p *Peer) AddRequestHandler(scope string, handler RequestHandlerFunc) {
+	p.rqMu.Lock()
+	defer p.rqMu.Unlock()
+	p.requestHandlers[scope] = handler
 }

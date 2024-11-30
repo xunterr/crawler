@@ -54,7 +54,7 @@ type DHT struct {
 	pred        *Node
 }
 
-func NewDHT(logger *zap.Logger, peer *p2p.Peer, router *p2p.Router, conf DhtConfig) (*DHT, error) {
+func NewDHT(logger *zap.Logger, peer *p2p.Peer, conf DhtConfig) (*DHT, error) {
 	self, err := ToNode(conf.Addr)
 	if err != nil {
 		return nil, err
@@ -73,7 +73,7 @@ func NewDHT(logger *zap.Logger, peer *p2p.Peer, router *p2p.Router, conf DhtConf
 		pred:        self,
 	}
 
-	d.registerHandlers(router)
+	d.registerHandlers()
 
 	go func() {
 		ticker := time.NewTicker(time.Duration(conf.StabilizeInterval) * time.Millisecond)

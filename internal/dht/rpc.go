@@ -18,12 +18,12 @@ var (
 	PING               string = "dht.ping"
 )
 
-func (d *DHT) registerHandlers(router *p2p.Router) {
-	router.AddRequestHandler(FIND_SUCCESSOR, d.findSuccessorHandler)
-	router.AddRequestHandler(UPDATE_PREDECESSOR, d.updatePredecessorHandler)
-	router.AddRequestHandler(UPDATE_FINGER, d.updateFingerHandler)
-	router.AddRequestHandler(GET_SUCC_LIST, d.getSuccListHandler)
-	router.AddRequestHandler(PING, d.pingHandler)
+func (d *DHT) registerHandlers() {
+	d.peer.AddRequestHandler(FIND_SUCCESSOR, d.findSuccessorHandler)
+	d.peer.AddRequestHandler(UPDATE_PREDECESSOR, d.updatePredecessorHandler)
+	d.peer.AddRequestHandler(UPDATE_FINGER, d.updateFingerHandler)
+	d.peer.AddRequestHandler(GET_SUCC_LIST, d.getSuccListHandler)
+	d.peer.AddRequestHandler(PING, d.pingHandler)
 }
 
 func (d *DHT) findSuccessorRPC(node *Node, key []byte) (*Node, error) {

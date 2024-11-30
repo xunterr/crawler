@@ -55,8 +55,7 @@ func main() {
 		return
 	}
 
-	router := p2p.NewRouter()
-	peer := p2p.NewPeer(defaultLogger, router)
+	peer := p2p.NewPeer(defaultLogger)
 
 	go peer.Listen(context.Background(), addr)
 
@@ -68,7 +67,7 @@ func main() {
 		BatchPeriodMs: 30_000,
 	}
 
-	distributedFrontier, err := frontier.NewDistributed(defaultLogger, peer, router, bfFrontier, dispatcherConf)
+	distributedFrontier, err := frontier.NewDistributed(defaultLogger, peer, bfFrontier, dispatcherConf)
 	if err != nil {
 		logger.Fatalln("Failed to init dispatcher: %s", err.Error())
 		return

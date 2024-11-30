@@ -38,7 +38,7 @@ type DistributedFrontier struct {
 	batchMu sync.Mutex
 }
 
-func NewDistributed(logger *zap.Logger, peer *p2p.Peer, router *p2p.Router, frontier *BfFrontier, conf DistributedFrontierConf) (*DistributedFrontier, error) {
+func NewDistributed(logger *zap.Logger, peer *p2p.Peer, frontier *BfFrontier, conf DistributedFrontierConf) (*DistributedFrontier, error) {
 	dhtConf := dht.DhtConfig{
 		Addr:               conf.Addr,
 		SuccListLength:     2,
@@ -46,7 +46,7 @@ func NewDistributed(logger *zap.Logger, peer *p2p.Peer, router *p2p.Router, fron
 		FixFingersInterval: 10_000,
 	}
 
-	dht, err := dht.NewDHT(logger, peer, router, dhtConf)
+	dht, err := dht.NewDHT(logger, peer, dhtConf)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +61,7 @@ func NewDistributed(logger *zap.Logger, peer *p2p.Peer, router *p2p.Router, fron
 		conf: conf,
 	}
 
-	router.AddRequestHandler(SCOPE, d.urlFoundHandler)
+	peer.AddRequestHandler(SCOPE, d.urlFoundHandler)
 	go d.dispatcherLoop(context.Background())
 	return d, nil
 }
