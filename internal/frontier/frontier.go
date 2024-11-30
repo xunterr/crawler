@@ -72,7 +72,8 @@ type BfFrontier struct {
 	queueMap map[string]*FrontierQueue
 	qmMu     sync.Mutex
 
-	bloom *boom.ScalableBloomFilter
+	bloom map[string]*boom.ScalableBloomFilter
+	blMu  sync.Mutex
 
 	maxActiveQueues int
 	nextQueue       *queues.PriorityQueue[string]
@@ -94,7 +95,7 @@ func NewBfFrontier(qp QueueProvider) *BfFrontier {
 
 		queueMap:        make(map[string]*FrontierQueue),
 		block:           sync.NewCond(new(sync.Mutex)),
-		bloom:           boom.NewDefaultScalableBloomFilter(0.01),
+		bloom:           make(map[string]*boom.ScalableBloomFilter),
 		maxActiveQueues: 256,
 		responseTime:    make(map[string]time.Duration),
 		nextQueue:       pq,
@@ -155,7 +156,27 @@ func (f *BfFrontier) Processed(url *url.URL, ttr time.Duration) {
 		f.wakeInactiveQueue()
 	}
 
-	f.bloom.Add([]byte(url.String()))
+	f.addBloom(url.Hostname(), []byte(url.String()))
+}
+
+func (f *BfFrontier) addBloom(key string, entry []byte) {
+	f.blMu.Lock()
+	defer f.blMu.Unlock()
+	b, ok := f.bloom[key]
+	if !ok {
+		b = boom.NewDefaultScalableBloomFilter(0.01)
+		f.bloom[key] = b
+	}
+	b.Add(entry)
+}
+
+func (f *BfFrontier) checkBloom(key string, entry []byte) bool {
+	b, ok := f.bloom[key]
+	if !ok {
+		return false
+	}
+
+	return b.Test(entry)
 }
 
 func (f *BfFrontier) setInactive(queueID string) {
@@ -239,7 +260,8 @@ func (f *BfFrontier) setNextQueue(queueIndex string, at time.Time) {
 }
 
 func (f *BfFrontier) Put(url *url.URL) {
-	if f.bloom.Test([]byte(url.String())) {
+	if f.checkBloom(url.Hostname(), []byte(url.String())) {
+		println("seen")
 		return
 	}
 
