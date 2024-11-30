@@ -177,6 +177,9 @@ func (f *BfFrontier) addBloom(key string, entry []byte) {
 }
 
 func (f *BfFrontier) checkBloom(key string, entry []byte) bool {
+	f.blMu.Lock()
+	defer f.blMu.Unlock()
+
 	b, ok := f.bloom[key]
 	if !ok {
 		return false
