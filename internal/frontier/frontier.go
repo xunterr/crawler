@@ -1,6 +1,8 @@
 package frontier
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"log"
@@ -89,6 +91,9 @@ type BfFrontier struct {
 	rtMu         sync.Mutex
 
 	inactiveQueues queues.Queue[string]
+
+	qeMu       sync.Mutex
+	onQueueEnd map[string][]chan struct{}
 }
 
 func NewBfFrontier(qp QueueProvider) *BfFrontier {
@@ -106,6 +111,7 @@ func NewBfFrontier(qp QueueProvider) *BfFrontier {
 		responseTime:    make(map[string]time.Duration),
 		nextQueue:       pq,
 		inactiveQueues:  queues.NewQueue[string](),
+		onQueueEnd:      make(map[string][]chan struct{}),
 	}
 
 	return f
@@ -123,6 +129,10 @@ func (f *BfFrontier) Get() (*url.URL, time.Time, error) {
 
 	if !ok {
 		log.Printf("Unable to retreive url queue %s", queueIndex)
+		return f.Get()
+	}
+
+	if queue.IsLocked() {
 		return f.Get()
 	}
 
@@ -154,6 +164,10 @@ func (f *BfFrontier) MarkProcessed(url *url.URL, ttr time.Duration) {
 		return
 	}
 
+	if queue.IsEmpty() {
+		go f.notifyAllOnEnd(url.Hostname())
+	}
+
 	if queue.isActive {
 		after := f.getNextRequestTime(url.Hostname())
 		f.setNextQueue(url.Hostname(), after)
@@ -163,6 +177,46 @@ func (f *BfFrontier) MarkProcessed(url *url.URL, ttr time.Duration) {
 	}
 
 	f.addBloom(url.Hostname(), []byte(url.String()))
+}
+
+func (f *BfFrontier) notifyAllOnEnd(queueID string) {
+	f.qeMu.Lock()
+	defer f.qeMu.Unlock()
+
+	ls, ok := f.onQueueEnd[queueID]
+	if !ok {
+		return
+	}
+
+	for _, l := range ls {
+		l <- struct{}{}
+		close(l)
+	}
+	delete(f.onQueueEnd, queueID)
+}
+
+func (f *BfFrontier) NotifyOnEnd(queueID string) chan struct{} {
+	f.qmMu.Lock()
+	defer f.qmMu.Unlock()
+
+	f.qeMu.Lock()
+	defer f.qeMu.Unlock()
+
+	listeners := []chan struct{}{}
+	if l, ok := f.onQueueEnd[queueID]; ok {
+		listeners = l
+	}
+
+	ch := make(chan struct{})
+	listeners = append(listeners, ch)
+
+	f.onQueueEnd[queueID] = listeners
+
+	if q, ok := f.queueMap[queueID]; ok && q.IsEmpty() {
+		go f.notifyAllOnEnd(queueID)
+	}
+
+	return ch
 }
 
 func (f *BfFrontier) addBloom(key string, entry []byte) {
@@ -186,6 +240,57 @@ func (f *BfFrontier) checkBloom(key string, entry []byte) bool {
 	}
 
 	return b.Test(entry)
+}
+
+func (f *BfFrontier) setBloom(key string, bloom []byte) { //this library doesn't allow for merging two bloom filters
+	f.blMu.Lock()
+	defer f.blMu.Unlock()
+
+	r := bytes.NewReader(bloom)
+	bl := boom.NewDefaultScalableBloomFilter(0.1)
+	_, err := bl.ReadFrom(r)
+	if err != nil {
+		return
+	}
+
+	f.bloom[key] = bl
+}
+
+func (f *BfFrontier) getBloom(key string) []byte {
+	f.blMu.Lock()
+	defer f.blMu.Unlock()
+
+	b, ok := f.bloom[key]
+	if !ok {
+		return []byte{}
+	}
+
+	var buff bytes.Buffer
+	foo := bufio.NewWriter(&buff)
+	b.WriteTo(foo)
+	return buff.Bytes()
+}
+
+func (f *BfFrontier) setQueueLock(queueID string, locked bool) bool {
+	f.qmMu.Lock()
+	queue, ok := f.queueMap[queueID]
+	f.qmMu.Unlock()
+
+	if !ok {
+		var err error
+		queue, err = f.addNewDefaultQueue(queueID)
+		if err != nil {
+			return false
+		}
+	}
+
+	if locked {
+		queue.Lock()
+	} else {
+		queue.Unlock()
+	}
+
+	return true
 }
 
 func (f *BfFrontier) setInactive(queueID string) {
@@ -278,13 +383,11 @@ func (f *BfFrontier) Put(url *url.URL) error {
 	f.qmMu.Unlock()
 
 	if !ok {
-		//no mapping, create one
-		q, err := f.queueProvider.Get(url.Hostname())
+		var err error
+		queue, err = f.addNewDefaultQueue(url.Hostname())
 		if err != nil {
 			return err
 		}
-
-		queue = f.addNewQueue(url.Hostname(), q, 20)
 	}
 
 	queue.Enqueue(Url{
@@ -294,7 +397,16 @@ func (f *BfFrontier) Put(url *url.URL) error {
 	return nil
 }
 
-func (f *BfFrontier) addNewQueue(host string, q queues.Queue[Url], limit uint64) *FrontierQueue {
+func (f *BfFrontier) addNewDefaultQueue(queueID string) (*FrontierQueue, error) {
+	q, err := f.queueProvider.Get(queueID)
+	if err != nil {
+		return nil, err
+	}
+
+	return f.addNewQueue(queueID, q), nil
+}
+
+func (f *BfFrontier) addNewQueue(host string, q queues.Queue[Url]) *FrontierQueue {
 
 	active := f.canAddNewQueue()
 	queue := NewFrontierQueue(q, active, 20)
@@ -318,6 +430,6 @@ func (f *BfFrontier) addNewQueue(host string, q queues.Queue[Url], limit uint64)
 }
 func (f *BfFrontier) LoadQueues(queues map[string]queues.Queue[Url]) {
 	for k, queue := range queues {
-		f.addNewQueue(k, queue, 20)
+		f.addNewQueue(k, queue)
 	}
 }

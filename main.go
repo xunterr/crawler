@@ -63,8 +63,9 @@ func main() {
 	bfFrontier := frontier.NewBfFrontier(qp)
 
 	dispatcherConf := frontier.DistributedFrontierConf{
-		Addr:          addr,
-		BatchPeriodMs: 30_000,
+		Addr:              addr,
+		BatchPeriodMs:     40_000,
+		CheckKeysPeriodMs: 30_000,
 	}
 
 	distributedFrontier, err := frontier.NewDistributed(defaultLogger, peer, bfFrontier, dispatcherConf)

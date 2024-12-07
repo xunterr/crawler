@@ -2,16 +2,6 @@ syntax = "proto3";
 package package;
 option go_package = "/proto";
 
-enum Status {
-  OK = 0;
-  ACCEPTED = 1;
-  ERROR = 2;
-}
-
-message Header {
-  string scope = 1;
-}
-
 message Error {
 }
 
@@ -44,4 +34,9 @@ message UrlBatch {
 message DispatcherRoute {
   string key = 1;
   string url = 2;
+}
+
+message KeyLockNotification{
+  string key = 1;
+  bytes bloom = 2;
 }

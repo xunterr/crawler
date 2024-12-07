@@ -3,6 +3,7 @@ package net
 import (
 	"encoding/binary"
 	"io"
+	"net"
 )
 
 func readData(r io.Reader) ([]byte, error) {
@@ -19,6 +20,12 @@ func readData(r io.Reader) ([]byte, error) {
 	}
 
 	return buf[:n], err
+}
+
+func WriteToStream(c net.Conn, data []byte) error {
+	msg := packMessage(data)
+	_, err := c.Write(msg)
+	return err
 }
 
 func packMessage(data []byte) []byte {

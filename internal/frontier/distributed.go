@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"sync"
 	"time"
@@ -13,16 +14,22 @@ import (
 	p2p "github.com/xunterr/crawler/internal/net"
 	pb "github.com/xunterr/crawler/proto"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"google.golang.org/protobuf/proto"
 )
 
 type UrlDiscoveredCallback func(url *url.URL)
 
-const SCOPE = "dispatcher.urlFound"
+const (
+	URL_FOUND   = "dispatcher.urlFound"
+	KEYS_LOCK   = "dispatcher.keysLock"
+	LOCK_NOTIFY = "dispatcher.lockNotify"
+)
 
 type DistributedFrontierConf struct {
-	BatchPeriodMs int
-	Addr          string
+	BatchPeriodMs     int
+	CheckKeysPeriodMs int
+	Addr              string
 }
 
 type DistributedFrontier struct {
@@ -43,10 +50,10 @@ func NewDistributed(logger *zap.Logger, peer *p2p.Peer, frontier *BfFrontier, co
 		Addr:               conf.Addr,
 		SuccListLength:     2,
 		StabilizeInterval:  10_000,
-		FixFingersInterval: 10_000,
+		FixFingersInterval: 15_000,
 	}
 
-	dht, err := dht.NewDHT(logger, peer, dhtConf)
+	table, err := dht.NewDHT(logger, peer, dhtConf)
 	if err != nil {
 		return nil, err
 	}
@@ -54,14 +61,17 @@ func NewDistributed(logger *zap.Logger, peer *p2p.Peer, frontier *BfFrontier, co
 	d := &DistributedFrontier{
 		logger:   logger.Sugar(),
 		peer:     peer,
-		dht:      dht,
+		dht:      table,
 		frontier: frontier,
 		batches:  make(map[string][]string),
 
 		conf: conf,
 	}
 
-	peer.AddRequestHandler(SCOPE, d.urlFoundHandler)
+	peer.AddRequestHandler(URL_FOUND, d.urlFoundHandler)
+	peer.AddRequestHandler(KEYS_LOCK, d.keysLockHandler)
+	peer.AddStreamHandler(LOCK_NOTIFY, d.keyLockNotifyHandler)
+
 	go d.dispatcherLoop(context.Background())
 	return d, nil
 }
@@ -83,7 +93,7 @@ func (d *DistributedFrontier) MarkProcessed(u *url.URL, ttr time.Duration) {
 }
 
 func (d *DistributedFrontier) Put(u *url.URL) error {
-	succ, err := d.dht.FindSuccessor(d.dht.MakeKey([]byte(u.Host)))
+	succ, err := d.dht.FindSuccessor(d.dht.MakeKey([]byte(u.Hostname())))
 	if err != nil {
 		return err
 	}
@@ -93,6 +103,132 @@ func (d *DistributedFrontier) Put(u *url.URL) error {
 		return nil
 	} else {
 		return d.createBatch(succ.Addr.String(), u)
+	}
+}
+
+func (d *DistributedFrontier) checkKeys() {
+	repartitioned := make(map[string][]string)
+	d.frontier.qmMu.Lock()
+	for k, q := range d.frontier.queueMap {
+		succ, err := d.dht.FindSuccessor(d.dht.MakeKey([]byte(k)))
+		if err != nil {
+			continue
+		}
+
+		if bytes.Compare(succ.Id, d.dht.GetID()) != 0 && !q.IsEmpty() {
+			if keys, ok := repartitioned[succ.Addr.String()]; ok {
+				keys = append(keys, k)
+				repartitioned[succ.Addr.String()] = keys
+			} else {
+				repartitioned[succ.Addr.String()] = []string{k}
+			}
+		}
+	}
+	d.frontier.qmMu.Unlock()
+
+	d.logger.Infof("Found %d conflicting keys", len(repartitioned))
+
+	for k, v := range repartitioned {
+		go d.sendKeysLock(k, v)
+		conn, err := d.peer.OpenStream(LOCK_NOTIFY, k)
+		if err != nil {
+			d.logger.Errorf("Error opening stream: %s", err.Error())
+			continue
+		}
+
+		var wg sync.WaitGroup
+		for _, e := range v {
+			wg.Add(1)
+			go func() {
+				d.sendKeyNotify(conn, e)
+				wg.Done()
+			}()
+		}
+
+		wg.Wait()
+		conn.Close()
+	}
+}
+
+func (d *DistributedFrontier) sendKeyNotify(conn net.Conn, key string) error {
+	<-d.frontier.NotifyOnEnd(key)
+	notification := &pb.KeyLockNotification{
+		Key:   key,
+		Bloom: d.frontier.getBloom(key),
+	}
+
+	d.logger.Logw(zapcore.InfoLevel,
+		"Finished processing key, notifying node.",
+		"key", key,
+		"node", conn.RemoteAddr().String())
+
+	data, err := proto.Marshal(notification)
+	if err != nil {
+		return err
+	}
+
+	err = p2p.WriteToStream(conn, data)
+	if err != nil {
+		d.logger.Errorw("Error writing to stream",
+			"node", conn.RemoteAddr().String(),
+			"error", err.Error())
+		return err
+	}
+
+	return nil
+}
+
+func (d *DistributedFrontier) keyLockNotifyHandler(ctx context.Context, stream *p2p.Stream, data chan []byte, rw *p2p.ResponseWriter) {
+	for req := range data {
+		d.logger.Info("Received unlock")
+		notif := &pb.KeyLockNotification{}
+		if err := proto.Unmarshal(req, notif); err != nil {
+			return
+		}
+
+		d.logger.Infof("Unlocking key: %s", notif.Key)
+		d.frontier.setQueueLock(notif.Key, false)
+		d.frontier.setBloom(notif.Key, notif.Bloom)
+	}
+}
+
+func (d *DistributedFrontier) sendKeysLock(node string, keys []string) error {
+	req := &pb.UrlBatch{
+		Url: keys,
+	}
+
+	data, err := proto.Marshal(req)
+	if err != nil {
+		return err
+	}
+
+	request := p2p.Request{
+		Scope:   KEYS_LOCK,
+		Payload: data,
+	}
+
+	res, err := d.peer.Call(node, &request)
+	if err != nil {
+		return err
+	}
+
+	if res.IsError {
+		return errors.New(fmt.Sprintf("Remote node error: %s", string(res.Payload)))
+	}
+
+	return nil
+}
+
+func (d *DistributedFrontier) keysLockHandler(ctx context.Context, data *p2p.Request, rw *p2p.ResponseWriter) {
+	keys := &pb.UrlBatch{}
+	if err := proto.Unmarshal(data.Payload, keys); err != nil {
+		rw.Response(false, []byte(err.Error()))
+		return
+	}
+
+	for _, e := range keys.Url {
+		d.logger.Infof("Locking key: %s", e)
+		d.frontier.setQueueLock(e, true)
 	}
 }
 
@@ -108,6 +244,7 @@ func (d *DistributedFrontier) urlFoundHandler(ctx context.Context, data *p2p.Req
 		if err != nil {
 			continue
 		}
+
 		d.frontier.Put(url)
 	}
 
@@ -130,25 +267,39 @@ func (d *DistributedFrontier) createBatch(node string, u *url.URL) error {
 }
 
 func (d *DistributedFrontier) dispatcherLoop(ctx context.Context) {
-	t := time.Tick(time.Duration(d.conf.BatchPeriodMs) * time.Millisecond)
-
-	for {
-		select {
-		case <-t:
-			d.sendBatches(ctx)
-		case <-ctx.Done():
-			break
+	go func() {
+		t := time.Tick(time.Duration(d.conf.BatchPeriodMs) * time.Millisecond)
+		for {
+			select {
+			case <-t:
+				go d.sendBatches(ctx)
+			case <-ctx.Done():
+				break
+			}
 		}
-	}
+	}()
+
+	go func() {
+		t := time.Tick(time.Duration(d.conf.CheckKeysPeriodMs) * time.Millisecond)
+		for {
+			select {
+			case <-t:
+				d.checkKeys()
+			case <-ctx.Done():
+				break
+			}
+		}
+	}()
 }
 
 func (d *DistributedFrontier) sendBatches(ctx context.Context) {
+	d.logger.Infof("Sending batches (%d)", len(d.batches))
 	d.batchMu.Lock()
 	defer d.batchMu.Unlock()
 	for k, v := range d.batches {
 		d.logger.Infof("Sending batch to node %s", k)
 
-		err := d.writeBatch(ctx, k, SCOPE, v)
+		err := d.writeBatch(ctx, k, URL_FOUND, v)
 		if err != nil {
 			d.logger.Infow("Failed to write to node %s: %s", k, err.Error())
 			continue

@@ -12,6 +12,7 @@ type Url struct {
 type FrontierQueue struct {
 	queue         queues.Queue[Url]
 	isActive      bool
+	isLocked      bool
 	sessionBudget uint64
 }
 
@@ -29,7 +30,7 @@ func (q *FrontierQueue) Enqueue(value Url) {
 
 func (q *FrontierQueue) Dequeue() (Url, bool) {
 
-	if !q.isActive {
+	if !q.isActive || q.IsLocked() {
 		return Url{}, false
 	}
 
@@ -55,6 +56,18 @@ func (q *FrontierQueue) Dequeue() (Url, bool) {
 
 func (q *FrontierQueue) IsEmpty() bool {
 	return q.queue.Len() == 0
+}
+
+func (q *FrontierQueue) IsLocked() bool {
+	return q.isLocked
+}
+
+func (q *FrontierQueue) Lock() {
+	q.isLocked = true
+}
+
+func (q *FrontierQueue) Unlock() {
+	q.isLocked = false
 }
 
 func (q *FrontierQueue) Reset(sessionBudget uint64) {

@@ -302,13 +302,15 @@ func (p *Peer) handleRequest(ctx context.Context, c net.Conn) error {
 func (p *Peer) handleStream(ctx context.Context, c net.Conn) chan []byte {
 	stream := make(chan []byte)
 	go func() {
-		data, err := readData(c)
-		if err != nil {
-			stream <- nil
-			return
-		}
+		for {
+			data, err := readData(c)
+			if err != nil {
+				close(stream)
+				return
+			}
 
-		stream <- data
+			stream <- data
+		}
 	}()
 	return stream
 }
