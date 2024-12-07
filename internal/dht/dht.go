@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"sync"
 	"time"
 
 	p2p "github.com/xunterr/crawler/internal/net"
@@ -52,6 +53,9 @@ type DHT struct {
 	succList    []*Node
 	succ        *Node
 	pred        *Node
+
+	mu        sync.Mutex
+	onNewSucc []func(*Node)
 }
 
 func NewDHT(logger *zap.Logger, peer *p2p.Peer, conf DhtConfig) (*DHT, error) {
@@ -69,7 +73,6 @@ func NewDHT(logger *zap.Logger, peer *p2p.Peer, conf DhtConfig) (*DHT, error) {
 		self:        self,
 		fingerTable: fingerTable,
 		succList:    succList,
-		succ:        self,
 		pred:        self,
 	}
 
@@ -132,16 +135,16 @@ func (d *DHT) GetID() []byte {
 
 func (d *DHT) stabilize() error {
 	d.refreshSuccessors()
-	succPred, err := d.updatePredecessorRPC(d.succ, d.self)
+	succPred, err := d.updatePredecessorRPC(d.fingerTable[0].succ, d.self)
 	if err != nil {
-		d.logger.Infow("Successor is down!", zap.String("node", d.succ.Addr.String()))
+		d.logger.Infow("Successor is down!", zap.String("node", d.fingerTable[0].succ.Addr.String()))
 		return err
 	}
 
 	//if is between us and succ and alive OR if our successor is down
-	if (Between(succPred.Id, d.self.Id, d.succ.Id) && d.isNodeAlive(succPred)) || !d.isNodeAlive(d.succ) {
-		d.logger.Infow("Found new successor", zap.String("node", d.succ.Addr.String()))
-		d.succ = succPred
+	if (Between(succPred.Id, d.self.Id, d.fingerTable[0].succ.Id) && d.isNodeAlive(succPred)) || !d.isNodeAlive(d.fingerTable[0].succ) {
+		d.fingerTable[0].succ = succPred
+		d.logger.Infow("Found new successor", zap.String("node", d.fingerTable[0].succ.Addr.String()))
 	}
 
 	return nil
@@ -199,7 +202,7 @@ func (d *DHT) displaySuccList() {
 func (d *DHT) displayPointers() {
 	fmt.Println("-----------------------")
 	fmt.Printf("pred | %s\n", d.pred.Addr.String())
-	fmt.Printf("succ | %s\n", d.succ.Addr.String())
+	fmt.Printf("succ | %s\n", d.fingerTable[0].succ.Addr.String())
 	fmt.Println("-----------------------")
 }
 
@@ -208,7 +211,7 @@ func (d *DHT) Join(n *Node) error {
 	if err != nil {
 		return err
 	}
-	d.succ = succ
+	d.fingerTable[0].succ = succ
 
 	return nil
 }
@@ -216,21 +219,21 @@ func (d *DHT) Join(n *Node) error {
 func (d *DHT) refreshSuccessors() error {
 	currSucc := 0
 	for currSucc < len(d.succList) {
-		succList, err := d.getSuccListRPC(d.succ)
+		succList, err := d.getSuccListRPC(d.fingerTable[0].succ)
 		if err != nil {
-			d.logger.Infow("Successor is down!", zap.String("node", d.succ.Addr.String()))
+			d.logger.Infow("Successor is down!", zap.String("node", d.fingerTable[0].succ.Addr.String()))
 
 			if currSucc == len(d.succList)-1 {
 				break
 			}
-			d.succ = d.succList[currSucc+1]
+			d.fingerTable[0].succ = d.succList[currSucc+1]
 
-			d.logger.Infow("New successor", zap.String("node", d.succ.Addr.String()))
+			d.logger.Infow("New successor", zap.String("node", d.fingerTable[0].succ.Addr.String()))
 
 			currSucc++
 		} else {
 			copy(succList[1:], succList)
-			succList[0] = d.succ
+			succList[0] = d.fingerTable[0].succ
 			d.succList = succList
 			break
 		}
@@ -253,7 +256,7 @@ func (d *DHT) FindSuccessor(key []byte) (*Node, error) {
 		n := d.findPredecessor(key, step)
 
 		if bytes.Compare(d.self.Id, n.Id) == 0 {
-			return d.succ, nil
+			return d.fingerTable[0].succ, nil
 		} else {
 			succ, err := d.findSuccessorRPC(n, key)
 			if err != nil {
@@ -268,11 +271,11 @@ func (d *DHT) FindSuccessor(key []byte) (*Node, error) {
 func (d *DHT) findPredecessor(key []byte, step int) *Node {
 	step += 1 //+1 for the first predecessor
 
-	prev := d.fingerTable[len(d.fingerTable)-1].succ
+	var prev *Node
 
-	for i := len(d.fingerTable) - 1; i > 0; i-- {
+	for i := len(d.fingerTable) - 1; i >= 0; i-- {
 		if Between(d.fingerTable[i].succ.Id, d.self.Id, key) {
-			if bytes.Compare(prev.Id, d.fingerTable[i].succ.Id) != 0 { //if found new unique predecessor
+			if prev == nil || bytes.Compare(prev.Id, d.fingerTable[i].succ.Id) != 0 { //if found new unique predecessor
 				step--
 				prev = d.fingerTable[i].succ
 			}
