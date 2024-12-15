@@ -15,13 +15,17 @@ import (
 	"github.com/xunterr/crawler/internal/fetcher"
 	"github.com/xunterr/crawler/internal/frontier"
 	p2p "github.com/xunterr/crawler/internal/net"
+	"github.com/xunterr/crawler/proto"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 var (
 	addr          string = "127.0.0.1:6969"
 	bootstrapNode string = ""
+	indexer       string = "localhost:8080"
 	seed          string = ""
 )
 
@@ -29,6 +33,7 @@ func init() {
 	flag.StringVar(&addr, "addr", addr, "defines node address")
 	flag.StringVar(&bootstrapNode, "node", "", "node to bootstrap with")
 	flag.StringVar(&seed, "u", "", "seed url")
+	flag.StringVar(&indexer, "i", "", "indexer address")
 }
 
 func initLogger(level zapcore.Level) *zap.Logger {
@@ -90,8 +95,16 @@ func main() {
 		}
 	}
 
-	fetcher := fetcher.DefaultFetcher{}
-	loop(logger, distributedFrontier, &fetcher)
+	conn, err := grpc.NewClient(indexer, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		logger.Panicf(err.Error())
+	}
+	defer conn.Close()
+
+	client := proto.NewIndexerClient(conn)
+
+	fetcher := fetcher.NewDefaultFetcher(defaultLogger, client)
+	loop(logger, distributedFrontier, fetcher)
 
 	wg.Wait()
 }

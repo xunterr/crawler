@@ -28,23 +28,43 @@ func get(link *url.URL) ([]byte, time.Duration, error) {
 	return data, ttr, nil
 }
 
-func parseLinks(input []byte) (links []*url.URL) {
+type PageInfo struct {
+	title string
+	body  []byte
+	links []*url.URL
+}
+
+func parsePage(input []byte) (*PageInfo, error) {
 	x, err := goquery.ParseString(string(input))
-	if err == nil {
-		for _, href := range x.Find("a").Attrs("href") {
-			link, err := url.Parse(href)
-			if err != nil {
-				continue
-			}
+	if err != nil {
+		return nil, err
+	}
 
-			if link.Scheme == "" && !strings.HasPrefix(link.String(), "/") {
-				continue
-			}
+	return &PageInfo{
+		body:  []byte(x.Text()),
+		title: parseTitle(x),
+		links: parseLinks(x),
+	}, nil
+}
 
-			links = append(links, link)
+func parseLinks(x goquery.Nodes) (links []*url.URL) {
+	for _, href := range x.Find("a").Attrs("href") {
+		link, err := url.Parse(href)
+		if err != nil {
+			continue
 		}
+
+		if link.Scheme == "" && !strings.HasPrefix(link.String(), "/") {
+			continue
+		}
+
+		links = append(links, link)
 	}
 	return
+}
+
+func parseTitle(x goquery.Nodes) string {
+	return x.Find("head title").Text()
 }
 
 func normalize(prev *url.URL, input *url.URL) *url.URL {

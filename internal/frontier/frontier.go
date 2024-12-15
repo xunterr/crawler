@@ -151,6 +151,31 @@ func (f *BfFrontier) Get() (*url.URL, time.Time, error) {
 	return url, accessAt, nil
 }
 
+func (f *BfFrontier) Put(url *url.URL) error {
+	if f.checkBloom(url.Hostname(), []byte(url.String())) {
+		return nil
+	}
+
+	f.qmMu.Lock()
+	queue, ok := f.queueMap[url.Hostname()]
+	f.qmMu.Unlock()
+
+	if !ok {
+		var err error
+		queue, err = f.addNewDefaultQueue(url.Hostname())
+		if err != nil {
+			return err
+		}
+	}
+
+	queue.Enqueue(Url{
+		Url:    url.String(),
+		Weight: 1,
+	})
+	f.addBloom(url.Hostname(), []byte(url.String()))
+	return nil
+}
+
 func (f *BfFrontier) MarkProcessed(url *url.URL, ttr time.Duration) {
 	f.rtMu.Lock()
 	f.responseTime[url.Hostname()] = ttr
@@ -175,8 +200,6 @@ func (f *BfFrontier) MarkProcessed(url *url.URL, ttr time.Duration) {
 		f.setInactive(url.Hostname())
 		f.wakeInactiveQueue()
 	}
-
-	f.addBloom(url.Hostname(), []byte(url.String()))
 }
 
 func (f *BfFrontier) notifyAllOnEnd(queueID string) {
@@ -371,30 +394,6 @@ func (f *BfFrontier) setNextQueue(queueIndex string, at time.Time) {
 	f.nextQueue.Push(queueIndex, int(at.UnixMilli()))
 	f.block.Signal()
 	f.block.L.Unlock()
-}
-
-func (f *BfFrontier) Put(url *url.URL) error {
-	if f.checkBloom(url.Hostname(), []byte(url.String())) {
-		return nil
-	}
-
-	f.qmMu.Lock()
-	queue, ok := f.queueMap[url.Hostname()]
-	f.qmMu.Unlock()
-
-	if !ok {
-		var err error
-		queue, err = f.addNewDefaultQueue(url.Hostname())
-		if err != nil {
-			return err
-		}
-	}
-
-	queue.Enqueue(Url{
-		Url:    url.String(),
-		Weight: 1,
-	})
-	return nil
 }
 
 func (f *BfFrontier) addNewDefaultQueue(queueID string) (*FrontierQueue, error) {

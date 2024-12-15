@@ -1,0 +1,47 @@
+syntax = "proto3";
+option go_package = "/proto";
+package indexer;
+
+service Indexer {
+  rpc Index(IndexRequest) returns (IndexResult);
+  rpc IndexAll(IndexAllRequest) returns (IndexResult);
+  rpc Query(QueryRequest) returns (QueryResults);
+}
+
+enum Type {
+  WEBPAGE = 0;
+  FILE = 1;
+}
+
+message QueryRequest {
+  string query = 1;
+  int32 limit = 2;
+}
+
+message QueryResults{
+  repeated QueryResult results = 1;
+}
+
+message QueryResult {
+  string url = 1;
+  string title = 2;
+}
+
+message IndexRequest {
+  Document document = 1;
+}
+
+message IndexAllRequest {
+  repeated Document document = 1;
+}
+
+message IndexResult {
+  bool isOk = 1;
+}
+
+message Document {
+  Type type = 1;
+  string url = 2;
+  string title = 3;
+  bytes body = 4;
+}
