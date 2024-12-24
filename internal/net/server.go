@@ -37,8 +37,8 @@ func NewPeer(logger *zap.Logger) *Peer {
 	}
 }
 
-type RequestHandlerFunc func(context.Context, *Request, *ResponseWriter)
-type StreamHandlerFunc func(context.Context, chan []byte, *ResponseWriter)
+type RequestHandlerFunc func(Context, []byte, *ResponseWriter)
+type StreamHandlerFunc func(Context, chan []byte, *ResponseWriter)
 
 type ResponseWriter struct {
 	c   net.Conn
@@ -315,6 +315,11 @@ func (p *Peer) handleRequest(ctx context.Context, c net.Conn) error {
 		return err
 	}
 
+	context := Context{
+		node:     c.RemoteAddr().String(),
+		metadata: msg.Metadata,
+	}
+
 	rw := newResponseWriter(c)
 
 	switch msg.Type {
@@ -323,15 +328,18 @@ func (p *Peer) handleRequest(ctx context.Context, c net.Conn) error {
 		if err != nil {
 			return err
 		}
-		p.routeRequest(ctx, rw, req)
+
+		context.scope = req.Scope
+		p.routeRequest(context, rw, req.Payload)
 	case StreamMsg:
 		st, err := ParseStream(msg.Data)
 		if err != nil {
 			return err
 		}
 
+		context.scope = st.Scope
 		stream := p.handleStream(ctx, c)
-		p.routeStream(ctx, rw, stream, st.Scope)
+		p.routeStream(context, rw, stream)
 	default:
 		return errors.New("Unsupported request message type")
 	}
@@ -355,18 +363,18 @@ func (p *Peer) handleStream(ctx context.Context, c net.Conn) chan []byte {
 	return stream
 }
 
-func (p *Peer) routeRequest(ctx context.Context, rw *ResponseWriter, req *Request) {
+func (p *Peer) routeRequest(ctx Context, rw *ResponseWriter, data []byte) {
 	p.rqMu.Lock()
-	handler, ok := p.requestHandlers[req.Scope]
+	handler, ok := p.requestHandlers[ctx.Scope()]
 	p.rqMu.Unlock()
 	if ok {
-		handler(ctx, req, rw)
+		handler(ctx, data, rw)
 	}
 }
 
-func (p *Peer) routeStream(ctx context.Context, rw *ResponseWriter, data chan []byte, scope string) {
+func (p *Peer) routeStream(ctx Context, rw *ResponseWriter, data chan []byte) {
 	p.stMu.Lock()
-	handler, ok := p.streamHandlers[scope]
+	handler, ok := p.streamHandlers[ctx.Scope()]
 	p.stMu.Unlock()
 	if ok {
 		go handler(ctx, data, rw)

@@ -178,7 +178,7 @@ func (d *DistributedFrontier) sendKeyNotify(conn net.Conn, key string) error {
 	return nil
 }
 
-func (d *DistributedFrontier) keyLockNotifyHandler(ctx context.Context, data chan []byte, rw *p2p.ResponseWriter) {
+func (d *DistributedFrontier) keyLockNotifyHandler(ctx p2p.Context, data chan []byte, rw *p2p.ResponseWriter) {
 	for req := range data {
 		d.logger.Info("Received unlock")
 		notif := &pb.KeyLockNotification{}
@@ -219,9 +219,9 @@ func (d *DistributedFrontier) sendKeysLock(node string, keys []string) error {
 	return nil
 }
 
-func (d *DistributedFrontier) keysLockHandler(ctx context.Context, data *p2p.Request, rw *p2p.ResponseWriter) {
+func (d *DistributedFrontier) keysLockHandler(ctx p2p.Context, data []byte, rw *p2p.ResponseWriter) {
 	keys := &pb.UrlBatch{}
-	if err := proto.Unmarshal(data.Payload, keys); err != nil {
+	if err := proto.Unmarshal(data, keys); err != nil {
 		rw.Response(false, []byte(err.Error()))
 		return
 	}
@@ -232,9 +232,9 @@ func (d *DistributedFrontier) keysLockHandler(ctx context.Context, data *p2p.Req
 	}
 }
 
-func (d *DistributedFrontier) urlFoundHandler(ctx context.Context, data *p2p.Request, rw *p2p.ResponseWriter) {
+func (d *DistributedFrontier) urlFoundHandler(ctx p2p.Context, data []byte, rw *p2p.ResponseWriter) {
 	batch := &pb.UrlBatch{}
-	if err := proto.Unmarshal(data.Payload, batch); err != nil {
+	if err := proto.Unmarshal(data, batch); err != nil {
 		rw.Response(false, []byte{})
 		return
 	}

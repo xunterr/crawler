@@ -1,7 +1,6 @@
 package dht
 
 import (
-	"context"
 	"errors"
 	"net"
 
@@ -133,9 +132,9 @@ func (d *DHT) pingRPC(n *Node) error {
 	return nil
 }
 
-func (d *DHT) findSuccessorHandler(ctx context.Context, req *p2p.Request, rw *p2p.ResponseWriter) {
+func (d *DHT) findSuccessorHandler(ctx p2p.Context, data []byte, rw *p2p.ResponseWriter) {
 	msg := &pb.Key{}
-	if err := proto.Unmarshal(req.Payload, msg); err != nil {
+	if err := proto.Unmarshal(data, msg); err != nil {
 		d.logger.Errorln(err.Error())
 		rw.Response(false, []byte{})
 		return
@@ -153,19 +152,19 @@ func (d *DHT) findSuccessorHandler(ctx context.Context, req *p2p.Request, rw *p2
 		Addr: succ.Addr.String(),
 	}
 
-	data, err := proto.Marshal(res)
+	resBytes, err := proto.Marshal(res)
 	if err != nil {
 		d.logger.Errorln(err.Error())
 		rw.Response(false, []byte{})
 		return
 	}
 
-	rw.Response(true, data)
+	rw.Response(true, resBytes)
 }
 
-func (d *DHT) updatePredecessorHandler(ctx context.Context, req *p2p.Request, rw *p2p.ResponseWriter) {
+func (d *DHT) updatePredecessorHandler(ctx p2p.Context, data []byte, rw *p2p.ResponseWriter) {
 	msg := &pb.Node{}
-	if err := proto.Unmarshal(req.Payload, msg); err != nil {
+	if err := proto.Unmarshal(data, msg); err != nil {
 		d.logger.Errorln(err.Error())
 		rw.Response(false, []byte{})
 		return
@@ -186,19 +185,19 @@ func (d *DHT) updatePredecessorHandler(ctx context.Context, req *p2p.Request, rw
 		Addr: oldPred.Addr.String(),
 	}
 
-	data, err := proto.Marshal(res)
+	resBytes, err := proto.Marshal(res)
 	if err != nil {
 		d.logger.Errorln(err.Error())
 		rw.Response(false, []byte{})
 		return
 	}
 
-	rw.Response(true, data)
+	rw.Response(true, resBytes)
 }
 
-func (d *DHT) updateFingerHandler(ctx context.Context, req *p2p.Request, rw *p2p.ResponseWriter) {
+func (d *DHT) updateFingerHandler(ctx p2p.Context, data []byte, rw *p2p.ResponseWriter) {
 	msg := &pb.Finger{}
-	if err := proto.Unmarshal(req.Payload, msg); err != nil {
+	if err := proto.Unmarshal(data, msg); err != nil {
 		rw.Response(false, []byte{})
 		return
 	}
@@ -213,7 +212,7 @@ func (d *DHT) updateFingerHandler(ctx context.Context, req *p2p.Request, rw *p2p
 	rw.Response(true, []byte{})
 }
 
-func (d *DHT) getSuccListHandler(ctx context.Context, req *p2p.Request, rw *p2p.ResponseWriter) {
+func (d *DHT) getSuccListHandler(ctx p2p.Context, data []byte, rw *p2p.ResponseWriter) {
 	nodes := make([]*pb.Node, len(d.succList))
 	for i, e := range d.succList {
 		nodes[i] = &pb.Node{
@@ -235,6 +234,6 @@ func (d *DHT) getSuccListHandler(ctx context.Context, req *p2p.Request, rw *p2p.
 	rw.Response(true, res)
 }
 
-func (d *DHT) pingHandler(ctx context.Context, req *p2p.Request, rw *p2p.ResponseWriter) {
+func (d *DHT) pingHandler(ctx p2p.Context, data []byte, rw *p2p.ResponseWriter) {
 	rw.Response(true, []byte("PONG"))
 }
