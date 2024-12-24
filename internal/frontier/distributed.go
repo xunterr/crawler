@@ -129,7 +129,8 @@ func (d *DistributedFrontier) checkKeys() {
 
 	for k, v := range repartitioned {
 		go d.sendKeysLock(k, v)
-		conn, err := d.peer.OpenStream(LOCK_NOTIFY, k)
+
+		conn, err := p2p.NewStreamWriter(d.peer, k).OpenStream(LOCK_NOTIFY)
 		if err != nil {
 			d.logger.Errorf("Error opening stream: %s", err.Error())
 			continue
@@ -177,7 +178,7 @@ func (d *DistributedFrontier) sendKeyNotify(conn net.Conn, key string) error {
 	return nil
 }
 
-func (d *DistributedFrontier) keyLockNotifyHandler(ctx context.Context, stream *p2p.Stream, data chan []byte, rw *p2p.ResponseWriter) {
+func (d *DistributedFrontier) keyLockNotifyHandler(ctx context.Context, data chan []byte, rw *p2p.ResponseWriter) {
 	for req := range data {
 		d.logger.Info("Received unlock")
 		notif := &pb.KeyLockNotification{}
@@ -201,12 +202,12 @@ func (d *DistributedFrontier) sendKeysLock(node string, keys []string) error {
 		return err
 	}
 
-	request := p2p.Request{
+	request := &p2p.Request{
 		Scope:   KEYS_LOCK,
 		Payload: data,
 	}
 
-	res, err := d.peer.Call(node, &request)
+	res, err := p2p.NewRequestWriter(d.peer, node).Request(request)
 	if err != nil {
 		return err
 	}
@@ -323,7 +324,7 @@ func (d *DistributedFrontier) writeBatch(ctx context.Context, node string, scope
 		Payload: batchBytes,
 	}
 
-	res, err := d.peer.Call(node, req)
+	res, err := p2p.NewRequestWriter(d.peer, node).Request(req)
 	if err != nil {
 		return err
 	}

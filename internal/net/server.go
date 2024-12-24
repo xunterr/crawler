@@ -37,22 +37,27 @@ func NewPeer(logger *zap.Logger) *Peer {
 	}
 }
 
-type HandlerType int
-
-const (
-	RequestHandler HandlerType = iota
-	StreamHandler
-)
-
 type RequestHandlerFunc func(context.Context, *Request, *ResponseWriter)
-type StreamHandlerFunc func(context.Context, *Stream, chan []byte, *ResponseWriter)
+type StreamHandlerFunc func(context.Context, chan []byte, *ResponseWriter)
 
 type ResponseWriter struct {
-	c net.Conn
+	c   net.Conn
+	msg *Message
 }
 
 func newResponseWriter(c net.Conn) *ResponseWriter {
-	return &ResponseWriter{c}
+	return &ResponseWriter{
+		c: c,
+		msg: &Message{
+			Type:     ResponseMsg,
+			Metadata: make(map[string][]byte),
+		},
+	}
+}
+
+func (rw *ResponseWriter) WithMetadata(metadata map[string][]byte) *ResponseWriter {
+	rw.msg.Metadata = metadata
+	return rw
 }
 
 func (rw *ResponseWriter) Response(isOk bool, data []byte) error {
@@ -62,18 +67,135 @@ func (rw *ResponseWriter) Response(isOk bool, data []byte) error {
 	}
 
 	resBytes := res.Marshal()
-	msg := &Message{
-		Length:  uint32(len(resBytes)),
-		Version: 1,
-		Type:    ResponseMsg,
-		Data:    resBytes,
-	}
+	rw.msg.Length = uint32(len(resBytes))
+	rw.msg.Version = 1
+	rw.msg.Data = resBytes
 
-	msgBytes := msg.Marshal()
+	msgBytes := rw.msg.Marshal()
 	_, err := rw.c.Write(msgBytes)
 
 	rw.c.Close()
 	return err
+}
+
+type RequestWriter struct {
+	peer *Peer
+	addr string
+	msg  *Message
+}
+
+func NewRequestWriter(peer *Peer, addr string) *RequestWriter {
+	return &RequestWriter{
+		peer: peer,
+		addr: addr,
+		msg: &Message{
+			Type:     RequestMsg,
+			Metadata: make(map[string][]byte),
+		},
+	}
+}
+
+func (rw *RequestWriter) WithMetadata(metadata map[string][]byte) *RequestWriter {
+	rw.msg.Metadata = metadata
+	return rw
+}
+
+func (rw *RequestWriter) Request(req *Request) (*Response, error) {
+	conn, err := rw.peer.Dial(rw.addr)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	data := req.Marshal()
+	rw.msg.Length = uint32(len(data))
+	rw.msg.Version = 1
+	rw.msg.Data = data
+
+	_, err = conn.Write(rw.msg.Marshal())
+	if err != nil {
+		return nil, err
+	}
+
+	resMsg, err := ParseMessage(conn)
+	if err != nil {
+		return nil, err
+	}
+
+	if resMsg.Type != ResponseMsg {
+		return nil, errors.New("Unexpected response type")
+	}
+
+	return ParseResponse(resMsg.Data)
+}
+
+func (rw *RequestWriter) RequestProto(scope string, req proto.Message, res proto.Message) error {
+	reqBytes, err := proto.Marshal(req)
+	if err != nil {
+		return err
+	}
+
+	request := &Request{
+		Scope:   scope,
+		Payload: reqBytes,
+	}
+
+	response, err := rw.Request(request)
+
+	if err != nil {
+		return err
+	}
+
+	if response.IsError {
+		return errors.New(fmt.Sprintf("Remote node %s returned error: %s", rw.addr, string(response.Payload)))
+	}
+
+	return proto.Unmarshal(response.Payload, res)
+}
+
+type StreamWriter struct {
+	peer *Peer
+	addr string
+	msg  *Message
+}
+
+func NewStreamWriter(peer *Peer, addr string) *StreamWriter {
+	return &StreamWriter{
+		peer: peer,
+		addr: addr,
+		msg: &Message{
+			Type:     StreamMsg,
+			Metadata: make(map[string][]byte),
+		},
+	}
+}
+
+func (sw *StreamWriter) WithMetadata(metadata map[string][]byte) *StreamWriter {
+	sw.msg.Metadata = metadata
+	return sw
+}
+
+func (sw *StreamWriter) OpenStream(scope string) (net.Conn, error) {
+	c, err := sw.peer.Dial(sw.addr)
+	if err != nil {
+		return nil, err
+	}
+
+	stream := &Stream{
+		Scope: scope,
+	}
+
+	streamBytes := stream.Marshal()
+	sw.msg.Length = uint32(len(streamBytes))
+	sw.msg.Version = 1
+	sw.msg.Data = streamBytes
+
+	_, err = c.Write(sw.msg.Marshal())
+	if err != nil {
+		return nil, err
+	}
+
+	return c, nil
 }
 
 func (p *Peer) Dial(addr string) (net.Conn, error) {
@@ -108,88 +230,6 @@ func (p *Peer) Dial(addr string) (net.Conn, error) {
 	}
 
 	return stream, nil
-}
-
-func (p *Peer) CallProto(addr string, scope string, req proto.Message, res proto.Message) error {
-	reqBytes, err := proto.Marshal(req)
-	if err != nil {
-		return err
-	}
-
-	request := &Request{
-		Scope:   scope,
-		Payload: reqBytes,
-	}
-
-	response, err := p.Call(addr, request)
-
-	if err != nil {
-		return err
-	}
-
-	if response.IsError {
-		return errors.New(fmt.Sprintf("Remote node %s returned error: %s", addr, string(response.Payload)))
-	}
-
-	return proto.Unmarshal(response.Payload, res)
-}
-
-func (p *Peer) Call(addr string, req *Request) (*Response, error) {
-	conn, err := p.Dial(addr)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-
-	data := req.Marshal()
-	msg := &Message{
-		Length:  uint32(len(data)),
-		Type:    RequestMsg,
-		Version: 1,
-		Data:    data,
-	}
-
-	_, err = conn.Write(msg.Marshal())
-	if err != nil {
-		return nil, err
-	}
-
-	resMsg, err := ParseMessage(conn)
-	if err != nil {
-		return nil, err
-	}
-
-	if resMsg.Type != ResponseMsg {
-		return nil, errors.New("Unexpected response type")
-	}
-
-	return ParseResponse(resMsg.Data)
-}
-
-func (p *Peer) OpenStream(scope string, addr string) (net.Conn, error) {
-	c, err := p.Dial(addr)
-	if err != nil {
-		return nil, err
-	}
-
-	stream := &Stream{
-		Scope: scope,
-	}
-
-	streamBytes := stream.Marshal()
-	msg := &Message{
-		Length:  uint32(len(streamBytes)),
-		Type:    StreamMsg,
-		Version: 1,
-		Data:    streamBytes,
-	}
-
-	_, err = c.Write(msg.Marshal())
-	if err != nil {
-		return nil, err
-	}
-
-	return c, nil
 }
 
 func (p *Peer) Listen(ctx context.Context, addr string) error {
@@ -283,7 +323,7 @@ func (p *Peer) handleRequest(ctx context.Context, c net.Conn) error {
 		if err != nil {
 			return err
 		}
-		p.routeRequest(ctx, rw, req, req.Scope)
+		p.routeRequest(ctx, rw, req)
 	case StreamMsg:
 		st, err := ParseStream(msg.Data)
 		if err != nil {
@@ -291,7 +331,7 @@ func (p *Peer) handleRequest(ctx context.Context, c net.Conn) error {
 		}
 
 		stream := p.handleStream(ctx, c)
-		p.routeStream(ctx, rw, st, stream, st.Scope)
+		p.routeStream(ctx, rw, stream, st.Scope)
 	default:
 		return errors.New("Unsupported request message type")
 	}
@@ -315,21 +355,21 @@ func (p *Peer) handleStream(ctx context.Context, c net.Conn) chan []byte {
 	return stream
 }
 
-func (p *Peer) routeRequest(ctx context.Context, rw *ResponseWriter, req *Request, scope string) {
+func (p *Peer) routeRequest(ctx context.Context, rw *ResponseWriter, req *Request) {
 	p.rqMu.Lock()
-	handler, ok := p.requestHandlers[scope]
+	handler, ok := p.requestHandlers[req.Scope]
 	p.rqMu.Unlock()
 	if ok {
 		handler(ctx, req, rw)
 	}
 }
 
-func (p *Peer) routeStream(ctx context.Context, rw *ResponseWriter, stream *Stream, data chan []byte, scope string) {
+func (p *Peer) routeStream(ctx context.Context, rw *ResponseWriter, data chan []byte, scope string) {
 	p.stMu.Lock()
 	handler, ok := p.streamHandlers[scope]
 	p.stMu.Unlock()
 	if ok {
-		go handler(ctx, stream, data, rw)
+		go handler(ctx, data, rw)
 	}
 }
 

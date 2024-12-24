@@ -33,7 +33,7 @@ func (d *DHT) findSuccessorRPC(node *Node, key []byte) (*Node, error) {
 
 	res := &pb.Node{}
 
-	err := d.peer.CallProto(node.Addr.String(), FIND_SUCCESSOR, req, res)
+	err := p2p.NewRequestWriter(d.peer, node.Addr.String()).RequestProto(FIND_SUCCESSOR, req, res)
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +52,8 @@ func (d *DHT) updatePredecessorRPC(node *Node, pred *Node) (*Node, error) {
 	}
 
 	res := &pb.Node{}
-	if err := d.peer.CallProto(node.Addr.String(), UPDATE_PREDECESSOR, req, res); err != nil {
+	err := p2p.NewRequestWriter(d.peer, node.Addr.String()).RequestProto(UPDATE_PREDECESSOR, req, res)
+	if err != nil {
 		return nil, err
 	}
 
@@ -78,7 +79,7 @@ func (d *DHT) updateFingerRPC(n *Node, finger *Node, i int) error {
 		Payload: reqBytes,
 	}
 
-	_, err = d.peer.Call(n.Addr.String(), req)
+	_, err = p2p.NewRequestWriter(d.peer, n.Addr.String()).Request(req)
 
 	return nil
 }
@@ -89,7 +90,7 @@ func (d *DHT) getSuccListRPC(n *Node) ([]*Node, error) {
 		Payload: []byte{},
 	}
 
-	res, err := d.peer.Call(n.Addr.String(), req)
+	res, err := p2p.NewRequestWriter(d.peer, n.Addr.String()).Request(req)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +122,7 @@ func (d *DHT) pingRPC(n *Node) error {
 		Payload: []byte("PING"),
 	}
 
-	res, err := d.peer.Call(n.Addr.String(), req)
+	res, err := p2p.NewRequestWriter(d.peer, n.Addr.String()).Request(req)
 	if err != nil {
 		return err
 	}
