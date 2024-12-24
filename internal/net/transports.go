@@ -8,7 +8,7 @@ import (
 	"log"
 )
 
-type MessageType uint32
+type MessageType uint8
 
 const (
 	RequestMsg MessageType = iota
@@ -17,10 +17,11 @@ const (
 )
 
 type Message struct {
-	Length  uint32
-	Version uint8
-	Type    MessageType
-	Data    []byte
+	Length   uint32
+	Version  uint8
+	Type     MessageType
+	Metadata map[string]string
+	Data     []byte
 }
 
 type Data interface {
@@ -48,23 +49,23 @@ func ParseMessage(r io.Reader) (*Message, error) {
 		return nil, err
 	}
 
-	buf := make([]byte, length+5)
+	buf := make([]byte, length+2)
 	n, err := io.ReadFull(r, buf)
 	if err != nil {
 		return nil, err
 	}
 
-	if uint32(n) != length+5 {
+	if uint32(n) != length+2 {
 		log.Printf("Length of buf: %d", len(buf))
 		log.Printf("Actual data length (%d) is less than declared (%d)", n, length)
 	}
 
 	version := buf[0]
-	msgType := MessageType(binary.BigEndian.Uint32(buf[1:5]))
+	msgType := MessageType(buf[1])
 
 	var data []byte
-	if len(buf) > 5 {
-		data = buf[5:]
+	if len(buf) > 2 {
+		data = buf[2:]
 	}
 
 	message := &Message{
@@ -124,13 +125,13 @@ func ParseStream(data []byte) (*Stream, error) {
 }
 
 func (m *Message) Marshal() []byte {
-	res := make([]byte, 5)
+	res := make([]byte, 6)
 
 	length := uint32(len(m.Data))
 	binary.BigEndian.PutUint32(res, length)
 
 	res[4] = m.Version
-	res = binary.BigEndian.AppendUint32(res, uint32(m.Type))
+	res[5] = byte(m.Type)
 	res = append(res, m.Data...)
 
 	return res
