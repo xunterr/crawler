@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -32,7 +33,7 @@ var (
 func init() {
 	flag.StringVar(&addr, "addr", addr, "defines node address")
 	flag.StringVar(&bootstrapNode, "node", "", "node to bootstrap with")
-	flag.StringVar(&seed, "u", "", "seed url")
+	flag.StringVar(&seed, "u", "", "seed list path")
 	flag.StringVar(&indexer, "i", "", "indexer address")
 }
 
@@ -45,6 +46,26 @@ func initLogger(level zapcore.Level) *zap.Logger {
 	return l
 }
 
+func readSeed(path string) ([]*url.URL, error) {
+	dat, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+
+	scanner := bufio.NewScanner(dat)
+	urls := []*url.URL{}
+
+	for scanner.Scan() {
+		url, err := url.Parse(scanner.Text())
+		if err != nil {
+			return urls, err
+		}
+
+		urls = append(urls, url)
+	}
+	return urls, nil
+}
+
 func main() {
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -54,10 +75,9 @@ func main() {
 	defer defaultLogger.Sync()
 	logger := defaultLogger.Sugar()
 
-	seedUrl, err := url.Parse(seed)
+	urls, err := readSeed(seed)
 	if err != nil {
-		logger.Fatalln("Can't parse URL'")
-		return
+		logger.Errorf("Can't parse URL: %s", err.Error())
 	}
 
 	peer := p2p.NewPeer(defaultLogger)
@@ -87,11 +107,10 @@ func main() {
 		}
 	}
 
-	if seed != "" {
-		err = distributedFrontier.Put(seedUrl)
+	for _, u := range urls {
+		err = distributedFrontier.Put(u)
 		if err != nil {
-			logger.Fatalln(err)
-			return
+			logger.Errorln(err)
 		}
 	}
 
@@ -139,7 +158,10 @@ func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fetcher fetcher
 			frontier.MarkProcessed(url, resp.TTR)
 
 			for _, e := range resp.Links {
-				frontier.Put(e)
+				err := frontier.Put(e)
+				if err != nil {
+					logger.Errorln(err.Error())
+				}
 			}
 
 			counter.Incr(1)

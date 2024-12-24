@@ -99,8 +99,7 @@ func (d *DistributedFrontier) Put(u *url.URL) error {
 	}
 
 	if bytes.Compare(succ.Id, d.dht.GetID()) == 0 {
-		d.frontier.Put(u)
-		return nil
+		return d.frontier.Put(u)
 	} else {
 		return d.createBatch(succ.Addr.String(), u)
 	}
