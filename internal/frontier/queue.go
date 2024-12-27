@@ -38,6 +38,7 @@ func (q *FrontierQueue) Dequeue() (Url, bool) {
 	ok := q.queue.Pop(&url)
 
 	if !ok {
+		q.isActive = false
 		return Url{}, false
 	}
 
@@ -56,6 +57,10 @@ func (q *FrontierQueue) Dequeue() (Url, bool) {
 
 func (q *FrontierQueue) IsEmpty() bool {
 	return q.queue.Len() == 0
+}
+
+func (q *FrontierQueue) IsActive() bool {
+	return q.isActive
 }
 
 func (q *FrontierQueue) IsLocked() bool {

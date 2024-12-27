@@ -107,14 +107,27 @@ func NewBfFrontier(qp QueueProvider) *BfFrontier {
 		queueMap:        make(map[string]*FrontierQueue),
 		block:           sync.NewCond(new(sync.Mutex)),
 		bloom:           make(map[string]*boom.ScalableBloomFilter),
-		maxActiveQueues: 256,
+		maxActiveQueues: 128,
 		responseTime:    make(map[string]time.Duration),
 		nextQueue:       pq,
 		inactiveQueues:  queues.NewQueue[string](),
 		onQueueEnd:      make(map[string][]chan struct{}),
 	}
 
+	go func() {
+		t := time.Tick(time.Duration(time.Second * 5))
+		for range t {
+			f.displayDebug()
+		}
+	}()
+
 	return f
+}
+
+func (f *BfFrontier) displayDebug() {
+	fmt.Printf("Active queues: %d\n", f.activeQueues)
+	fmt.Printf("Ready queues: %d\n", f.nextQueue.Length())
+	fmt.Printf("Inactive queues: %d\n", f.inactiveQueues.Len())
 }
 
 func (f *BfFrontier) Get() (*url.URL, time.Time, error) {
@@ -132,14 +145,11 @@ func (f *BfFrontier) Get() (*url.URL, time.Time, error) {
 		return f.Get()
 	}
 
-	if queue.IsLocked() {
-		return f.Get()
-	}
-
 	u, ok := queue.Dequeue()
 
 	if !ok {
 		f.setInactive(queueIndex)
+		f.wakeInactiveQueue()
 		return f.Get()
 	}
 
@@ -329,31 +339,47 @@ func (f *BfFrontier) wakeInactiveQueue() {
 		return
 	}
 
-	var inactiveQueueID string
-	ok := f.inactiveQueues.Pop(&inactiveQueueID)
+	id, queue, ok := f.popNextInactiveQueue(f.inactiveQueues.Len() % 512)
 	if !ok {
 		return
 	}
 
-	f.qmMu.Lock()
-	inactiveQueue, ok := f.queueMap[inactiveQueueID]
-	f.qmMu.Unlock()
-
-	if !ok {
-		return
-	}
-
-	inactiveQueue.Reset(20)
+	queue.Reset(20)
 
 	f.qmMu.Lock()
-	f.queueMap[inactiveQueueID] = inactiveQueue
+	f.queueMap[id] = queue
 	f.qmMu.Unlock()
 
-	f.setNextQueue(inactiveQueueID, time.Now().UTC())
+	f.setNextQueue(id, time.Now().UTC())
 
 	f.aqMu.Lock()
 	f.activeQueues += 1
 	f.aqMu.Unlock()
+}
+
+func (f *BfFrontier) popNextInactiveQueue(depth int) (string, *FrontierQueue, bool) {
+	for i := depth; i > 0; i-- {
+		var inactiveQueueID string
+		ok := f.inactiveQueues.Pop(&inactiveQueueID)
+		if !ok {
+			return "", nil, false
+		}
+
+		f.qmMu.Lock()
+		inactiveQueue, ok := f.queueMap[inactiveQueueID]
+		f.qmMu.Unlock()
+		if !ok {
+			continue
+		}
+
+		if !inactiveQueue.IsLocked() && !inactiveQueue.IsEmpty() {
+			return inactiveQueueID, inactiveQueue, true
+		} else {
+			f.inactiveQueues.Push(inactiveQueueID)
+		}
+	}
+
+	return "", nil, false
 }
 
 func (f *BfFrontier) canAddNewQueue() bool {

@@ -28,6 +28,7 @@ var (
 	bootstrapNode string = ""
 	indexer       string = "localhost:8080"
 	seed          string = ""
+	distributed   bool   = false
 )
 
 func init() {
@@ -35,6 +36,7 @@ func init() {
 	flag.StringVar(&bootstrapNode, "node", "", "node to bootstrap with")
 	flag.StringVar(&seed, "u", "", "seed list path")
 	flag.StringVar(&indexer, "i", "", "indexer address")
+	flag.BoolVar(&distributed, "d", distributed, "distributed vs local deployment")
 }
 
 func initLogger(level zapcore.Level) *zap.Logger {
@@ -75,40 +77,21 @@ func main() {
 	defer defaultLogger.Sync()
 	logger := defaultLogger.Sugar()
 
+	var frontier frontier.Frontier
+
+	if distributed {
+		frontier = makeDistributedFrontier(logger)
+	} else {
+		frontier = makeFrontier()
+	}
+
 	urls, err := readSeed(seed)
 	if err != nil {
 		logger.Errorf("Can't parse URL: %s", err.Error())
 	}
 
-	peer := p2p.NewPeer(defaultLogger)
-
-	go peer.Listen(context.Background(), addr)
-
-	qp := frontier.InMemoryQueueProvider{}
-	bfFrontier := frontier.NewBfFrontier(qp)
-
-	dispatcherConf := frontier.DistributedFrontierConf{
-		Addr:              addr,
-		BatchPeriodMs:     40_000,
-		CheckKeysPeriodMs: 30_000,
-	}
-
-	distributedFrontier, err := frontier.NewDistributed(defaultLogger, peer, bfFrontier, dispatcherConf)
-	if err != nil {
-		logger.Fatalln("Failed to init dispatcher: %s", err.Error())
-		return
-	}
-
-	fmt.Printf("Node to bootstrap from: %s\n", bootstrapNode)
-	if bootstrapNode != "" {
-		err := distributedFrontier.Bootstrap(bootstrapNode)
-		if err != nil {
-			logger.Infof("Failed to bootstrap from node %s", bootstrapNode)
-		}
-	}
-
 	for _, u := range urls {
-		err = distributedFrontier.Put(u)
+		err = frontier.Put(u)
 		if err != nil {
 			logger.Errorln(err)
 		}
@@ -123,9 +106,44 @@ func main() {
 	client := proto.NewIndexerClient(conn)
 
 	fetcher := fetcher.NewDefaultFetcher(defaultLogger, client)
-	loop(logger, distributedFrontier, fetcher)
+	loop(logger, frontier, fetcher)
 
 	wg.Wait()
+}
+
+func makeDistributedFrontier(logger *zap.SugaredLogger) frontier.Frontier {
+	peer := p2p.NewPeer(logger.Desugar())
+
+	go peer.Listen(context.Background(), addr)
+
+	bfFrontier := makeFrontier()
+
+	dispatcherConf := frontier.DistributedFrontierConf{
+		Addr:              addr,
+		BatchPeriodMs:     40_000,
+		CheckKeysPeriodMs: 30_000,
+	}
+
+	distributedFrontier, err := frontier.NewDistributed(logger.Desugar(), peer, bfFrontier.(*frontier.BfFrontier), dispatcherConf)
+	if err != nil {
+		logger.Fatalln("Failed to init dispatcher: %s", err.Error())
+		return nil
+	}
+
+	fmt.Printf("Node to bootstrap from: %s\n", bootstrapNode)
+	if bootstrapNode != "" {
+		err := distributedFrontier.Bootstrap(bootstrapNode)
+		if err != nil {
+			logger.Infof("Failed to bootstrap from node %s: %s", bootstrapNode, err.Error())
+		}
+	}
+
+	return distributedFrontier
+}
+
+func makeFrontier() frontier.Frontier {
+	qp := frontier.InMemoryQueueProvider{}
+	return frontier.NewBfFrontier(qp)
 }
 
 func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fetcher fetcher.Fetcher) {
@@ -140,7 +158,6 @@ func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fetcher fetcher
 	}()
 
 	for {
-		time.Sleep(50 * time.Millisecond)
 		url, accessAt, err := frontier.Get()
 		if err != nil {
 			log.Println(err)
