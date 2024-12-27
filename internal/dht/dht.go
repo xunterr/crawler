@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"crypto/sha1"
 	"fmt"
-	"math/big"
 	"net"
 	"sync"
-	"time"
 
 	p2p "github.com/xunterr/crawler/internal/net"
+	pb "github.com/xunterr/crawler/proto"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 )
 
 type finger struct {
@@ -25,158 +25,132 @@ type Node struct {
 	Id   []byte
 }
 
-func ToNode(addr string) (*Node, error) {
-	h := sha1.New()
-	_, err := h.Write([]byte(addr))
-	if err != nil {
-		return nil, err
-	}
-
-	id := h.Sum(nil)
+func ToNodeWithID(addr string, id []byte) (*Node, error) {
 	a, err := net.ResolveTCPAddr("tcp", addr)
 	return &Node{a, id}, err
 }
+
+var (
+	FIND_SUCCESSOR     string = "dht.findSuccessor"
+	UPDATE_PREDECESSOR string = "dht.updatePredecessor"
+	UPDATE_FINGER      string = "dht.updateFinger"
+	GET_SUCC_LIST      string = "dht.getSuccList"
+	PING               string = "dht.ping"
+)
 
 type DhtConfig struct {
 	Addr               string
 	SuccListLength     int
 	StabilizeInterval  int
 	FixFingersInterval int
+	VnodeNum           int
 }
 
 type DHT struct {
 	logger *zap.SugaredLogger
 
-	peer        *p2p.Peer
-	self        *Node
-	fingerTable fingerTable
-	succList    []*Node
-	succ        *Node
-	pred        *Node
+	peer *p2p.Peer
 
-	mu        sync.Mutex
-	onNewSucc []func(*Node)
+	vnodes map[string]*vnode
+	vnMu   sync.Mutex
 }
 
 func NewDHT(logger *zap.Logger, peer *p2p.Peer, conf DhtConfig) (*DHT, error) {
-	self, err := ToNode(conf.Addr)
+	addr, err := net.ResolveTCPAddr("tcp", conf.Addr)
 	if err != nil {
 		return nil, err
 	}
 
-	fingerTable := initFingerTable(self)
-	succList := initSuccList(conf.SuccListLength, self)
 	d := &DHT{
 		logger: logger.Sugar(),
-
-		peer:        peer,
-		self:        self,
-		fingerTable: fingerTable,
-		succList:    succList,
-		pred:        self,
+		peer:   peer,
+		vnodes: make(map[string]*vnode),
 	}
 
 	d.registerHandlers()
-
-	go func() {
-		ticker := time.NewTicker(time.Duration(conf.StabilizeInterval) * time.Millisecond)
-		for range ticker.C {
-			d.stabilize()
-		}
-	}()
-
-	go func() {
-		next := 0
-		ticker := time.NewTicker(time.Duration(conf.FixFingersInterval) * time.Millisecond)
-		for range ticker.C {
-			d.fixFinger(next)
-			next = (next + 1) % 160
-		}
-	}()
+	d.initVnodes(conf, addr)
 
 	return d, nil
 }
 
-func initSuccList(length int, succ *Node) []*Node {
-	list := make([]*Node, length)
-	for i := 0; i < length; i++ {
-		list[i] = succ
-	}
-	return list
+func (d *DHT) registerHandlers() {
+	d.peer.AddRequestHandler(FIND_SUCCESSOR, d.findSuccessorHandler)
+	d.peer.AddRequestHandler(UPDATE_PREDECESSOR, d.updatePredecessorHandler)
+	d.peer.AddRequestHandler(GET_SUCC_LIST, d.getSuccListHandler)
+	d.peer.AddRequestHandler(PING, d.pingHandler)
 }
 
-func initFingerTable(n *Node) []*finger {
-	table := make([]*finger, 160)
-	for i := 0; i < 160; i++ {
-		fingerId := getFingerId(n.Id, i, 160)
-		table[i] = &finger{
-			id:   fingerId,
-			succ: n,
+func (d *DHT) initVnodes(dhtConf DhtConfig, dhtAddr net.Addr) {
+	var prevNode *Node
+	for i := 0; i < dhtConf.VnodeNum; i++ {
+		addr := fmt.Sprintf("%s:%d", dhtConf.Addr, i)
+		nodeId := d.MakeKey([]byte(addr))
+		node := &Node{
+			Id:   nodeId,
+			Addr: dhtAddr,
+		}
+
+		vnodeConf := vnodeConf{
+			SuccListLength:     dhtConf.SuccListLength,
+			StabilizeInterval:  dhtConf.StabilizeInterval,
+			FixFingersInterval: dhtConf.FixFingersInterval,
+		}
+
+		vnode := newVnode(d.logger.Desugar(), node, func(addr string) *p2p.RequestWriter {
+			return p2p.NewRequestWriter(d.peer, addr)
+		}, &vnodeConf)
+
+		d.vnMu.Lock()
+		d.vnodes[string(nodeId)] = vnode
+		d.vnMu.Unlock()
+
+		if prevNode != nil {
+			go vnode.join(prevNode)
+		}
+
+		prevNode = node
+	}
+}
+
+func (d *DHT) Join(addr string) error {
+	firstVnode := fmt.Sprintf("%s:1", addr)
+	node, err := ToNodeWithID(addr, d.MakeKey([]byte(firstVnode)))
+	if err != nil {
+		return err
+	}
+
+	d.vnMu.Lock()
+	defer d.vnMu.Unlock()
+	for _, n := range d.vnodes {
+		go n.join(node)
+	}
+
+	return nil
+}
+
+func (d *DHT) FindSuccessor(key []byte) (*Node, error) {
+	vnode := d.findClosestVnode(key)
+	return vnode.FindSuccessor(key)
+}
+
+func (d *DHT) findClosestVnode(key []byte) *vnode {
+	var prev *vnode
+
+	d.vnMu.Lock()
+	defer d.vnMu.Unlock()
+
+	for _, v := range d.vnodes {
+		if bytes.Compare(v.GetID(), key) == 0 {
+			return v
+		}
+
+		if prev == nil ||
+			Between(v.GetID(), prev.GetID(), key) {
+			prev = v
 		}
 	}
-	return table
-}
 
-func getFingerId(n []byte, k, m int) []byte {
-	x := big.NewInt(2)
-	x.Exp(x, big.NewInt(int64(k)-1), nil)
-
-	y := big.NewInt(2)
-	y.Exp(y, big.NewInt(int64(m)), nil)
-
-	res := &big.Int{}
-	res.SetBytes(n).Add(res, x).Mod(res, y)
-	return res.Bytes()
-}
-
-func (d *DHT) GetID() []byte {
-	return d.self.Id
-}
-
-func (d *DHT) stabilize() error {
-	d.refreshSuccessors()
-	succPred, err := d.updatePredecessorRPC(d.fingerTable[0].succ, d.self)
-	if err != nil {
-		d.logger.Infow("Successor is down!", zap.String("node", d.fingerTable[0].succ.Addr.String()))
-		return err
-	}
-
-	//if is between us and succ and alive OR if our successor is down
-	if (Between(succPred.Id, d.self.Id, d.fingerTable[0].succ.Id) && d.isNodeAlive(succPred)) || !d.isNodeAlive(d.fingerTable[0].succ) {
-		d.fingerTable[0].succ = succPred
-		d.logger.Infow("Found new successor", zap.String("node", d.fingerTable[0].succ.Addr.String()))
-	}
-
-	return nil
-}
-
-func (d *DHT) fixFinger(finger int) error {
-	newFinger, err := d.FindSuccessor(d.fingerTable[finger].id)
-	if err != nil {
-		return err
-	}
-
-	d.fingerTable[finger].succ = newFinger
-	return nil
-}
-
-func (d *DHT) updatePredecessor(p *Node) {
-	if d.pred == nil || Between(p.Id, d.pred.Id, d.self.Id) || !d.isNodeAlive(d.pred) {
-		d.logger.Infow("Found new predecessor", zap.String("node", p.Addr.String()))
-		d.pred = p
-	}
-}
-
-func (d *DHT) isNodeAlive(node *Node) bool {
-	err := d.pingRPC(node)
-	return err == nil
-}
-
-func (d *DHT) updateFinger(i int, s *Node) {
-	if bytes.Compare(s.Id, d.self.Id) == 0 ||
-		Between(s.Id, d.self.Id, d.fingerTable[i].succ.Id) {
-		d.fingerTable[i].succ = s
-	}
+	return prev
 }
 
 func (d *DHT) MakeKey(from []byte) []byte {
@@ -185,117 +159,121 @@ func (d *DHT) MakeKey(from []byte) []byte {
 	return id.Sum(nil)
 }
 
-func (d *DHT) displayTable() {
-	for i, e := range d.fingerTable {
-		fmt.Printf("%d-... : %s\r\n", i, e.succ.Addr.String())
+func (d *DHT) getVnodeFromMetadata(metadata map[string][]byte) (*vnode, bool) {
+	nodeId, ok := metadata["to"]
+	if !ok {
+		return nil, false
 	}
+
+	d.vnMu.Lock()
+	node, ok := d.vnodes[string(nodeId)]
+	d.vnMu.Unlock()
+	return node, ok
 }
 
-func (d *DHT) displaySuccList() {
-	fmt.Println("-----------------------")
-	for i, e := range d.succList {
-		fmt.Printf("%d | %s\n", i, e.Addr.String())
+func (d *DHT) findSuccessorHandler(ctx p2p.Context, data []byte, rw *p2p.ResponseWriter) {
+	vnode, ok := d.getVnodeFromMetadata(ctx.Metadata())
+	if !ok {
+		rw.Response(false, []byte{})
+		return
 	}
-	fmt.Println("-----------------------")
-}
 
-func (d *DHT) displayPointers() {
-	fmt.Println("-----------------------")
-	fmt.Printf("pred | %s\n", d.pred.Addr.String())
-	fmt.Printf("succ | %s\n", d.fingerTable[0].succ.Addr.String())
-	fmt.Println("-----------------------")
-}
+	msg := &pb.Key{}
+	if err := proto.Unmarshal(data, msg); err != nil {
+		d.logger.Errorln(err.Error())
+		rw.Response(false, []byte{})
+		return
+	}
 
-func (d *DHT) Join(n *Node) error {
-	succ, err := d.findSuccessorRPC(n, d.self.Id)
+	succ, err := vnode.FindSuccessor(msg.Key)
 	if err != nil {
-		return err
+		d.logger.Errorln(err.Error())
+		rw.Response(false, []byte{})
+		return
 	}
-	d.fingerTable[0].succ = succ
 
-	return nil
+	res := &pb.Node{
+		Id:   succ.Id,
+		Addr: succ.Addr.String(),
+	}
+
+	resBytes, err := proto.Marshal(res)
+	if err != nil {
+		d.logger.Errorln(err.Error())
+		rw.Response(false, []byte{})
+		return
+	}
+
+	rw.Response(true, resBytes)
 }
 
-func (d *DHT) refreshSuccessors() error {
-	currSucc := 0
-	for currSucc < len(d.succList) {
-		succList, err := d.getSuccListRPC(d.fingerTable[0].succ)
-		if err != nil {
-			d.logger.Infow("Successor is down!", zap.String("node", d.fingerTable[0].succ.Addr.String()))
+func (d *DHT) updatePredecessorHandler(ctx p2p.Context, data []byte, rw *p2p.ResponseWriter) {
+	vnode, ok := d.getVnodeFromMetadata(ctx.Metadata())
+	if !ok {
+		rw.Response(false, []byte{})
+		return
+	}
 
-			if currSucc == len(d.succList)-1 {
-				break
-			}
-			d.fingerTable[0].succ = d.succList[currSucc+1]
+	msg := &pb.Node{}
+	if err := proto.Unmarshal(data, msg); err != nil {
+		d.logger.Errorln(err.Error())
+		rw.Response(false, []byte{})
+		return
+	}
 
-			d.logger.Infow("New successor", zap.String("node", d.fingerTable[0].succ.Addr.String()))
+	newPred, err := ToNodeWithID(msg.Addr, msg.Id)
+	if err != nil {
+		d.logger.Errorln(err.Error())
+		rw.Response(false, []byte{})
+		return
+	}
 
-			currSucc++
-		} else {
-			copy(succList[1:], succList)
-			succList[0] = d.fingerTable[0].succ
-			d.succList = succList
-			break
+	oldPred := vnode.pred
+	vnode.updatePredecessor(newPred)
+
+	res := &pb.Node{
+		Id:   oldPred.Id,
+		Addr: oldPred.Addr.String(),
+	}
+
+	resBytes, err := proto.Marshal(res)
+	if err != nil {
+		d.logger.Errorln(err.Error())
+		rw.Response(false, []byte{})
+		return
+	}
+
+	rw.Response(true, resBytes)
+}
+
+func (d *DHT) getSuccListHandler(ctx p2p.Context, data []byte, rw *p2p.ResponseWriter) {
+	vnode, ok := d.getVnodeFromMetadata(ctx.Metadata())
+	if !ok {
+		rw.Response(false, []byte{})
+		return
+	}
+
+	nodes := make([]*pb.Node, len(vnode.succList))
+	for i, e := range vnode.succList {
+		nodes[i] = &pb.Node{
+			Id:   e.Id,
+			Addr: e.Addr.String(),
 		}
 	}
-	return nil
+
+	succList := &pb.SuccList{
+		Node: nodes,
+	}
+
+	res, err := proto.Marshal(succList)
+	if err != nil {
+		rw.Response(false, []byte(err.Error()))
+		return
+	}
+
+	rw.Response(true, res)
 }
 
-func (d *DHT) FindSuccessor(key []byte) (*Node, error) {
-	if len(d.fingerTable) == 0 {
-		d.logger.Warnln("No fingers")
-		return d.self, nil
-	}
-
-	if bytes.Compare(d.self.Id, key) == 0 {
-		return d.self, nil
-	}
-
-	step := 0
-	for {
-		n := d.findPredecessor(key, step)
-
-		if bytes.Compare(d.self.Id, n.Id) == 0 {
-			return d.fingerTable[0].succ, nil
-		} else {
-			succ, err := d.findSuccessorRPC(n, key)
-			if err != nil {
-				step++
-				continue
-			}
-			return succ, nil
-		}
-	}
-}
-
-func (d *DHT) findPredecessor(key []byte, step int) *Node {
-	step += 1 //+1 for the first predecessor
-
-	var prev *Node
-
-	for i := len(d.fingerTable) - 1; i >= 0; i-- {
-		if Between(d.fingerTable[i].succ.Id, d.self.Id, key) {
-			if prev == nil || bytes.Compare(prev.Id, d.fingerTable[i].succ.Id) != 0 { //if found new unique predecessor
-				step--
-				prev = d.fingerTable[i].succ
-			}
-
-			if step == 0 {
-				return d.fingerTable[i].succ
-			}
-		}
-	}
-	return d.self
-}
-
-func Between(key, a, b []byte) bool {
-	switch bytes.Compare(a, b) {
-	case 1:
-		return bytes.Compare(a, key) == -1 || bytes.Compare(b, key) > 0
-	case -1:
-		return bytes.Compare(a, key) == -1 && bytes.Compare(b, key) > 0
-	case 0:
-		return bytes.Compare(a, key) != 0
-	}
-	return false
+func (d *DHT) pingHandler(ctx p2p.Context, data []byte, rw *p2p.ResponseWriter) {
+	rw.Response(true, []byte("PONG"))
 }

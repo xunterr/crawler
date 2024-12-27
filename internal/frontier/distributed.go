@@ -1,7 +1,6 @@
 package frontier
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -51,6 +50,7 @@ func NewDistributed(logger *zap.Logger, peer *p2p.Peer, frontier *BfFrontier, co
 		SuccListLength:     2,
 		StabilizeInterval:  10_000,
 		FixFingersInterval: 15_000,
+		VnodeNum:           32,
 	}
 
 	table, err := dht.NewDHT(logger, peer, dhtConf)
@@ -77,11 +77,7 @@ func NewDistributed(logger *zap.Logger, peer *p2p.Peer, frontier *BfFrontier, co
 }
 
 func (d *DistributedFrontier) Bootstrap(addr string) error {
-	node, err := dht.ToNode(addr)
-	if err != nil {
-		return err
-	}
-	return d.dht.Join(node)
+	return d.dht.Join(addr)
 }
 
 func (d *DistributedFrontier) Get() (*url.URL, time.Time, error) {
@@ -98,7 +94,7 @@ func (d *DistributedFrontier) Put(u *url.URL) error {
 		return err
 	}
 
-	if bytes.Compare(succ.Id, d.dht.GetID()) == 0 {
+	if succ.Addr.String() == d.conf.Addr {
 		return d.frontier.Put(u)
 	} else {
 		return d.createBatch(succ.Addr.String(), u)
@@ -114,7 +110,7 @@ func (d *DistributedFrontier) checkKeys() {
 			continue
 		}
 
-		if bytes.Compare(succ.Id, d.dht.GetID()) != 0 && !q.IsEmpty() {
+		if succ.Addr.String() != d.conf.Addr && !q.IsEmpty() {
 			if keys, ok := repartitioned[succ.Addr.String()]; ok {
 				keys = append(keys, k)
 				repartitioned[succ.Addr.String()] = keys

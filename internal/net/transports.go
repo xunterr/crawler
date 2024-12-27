@@ -95,6 +95,7 @@ func readMetadata(data []byte) (map[string][]byte, uint) {
 	var curr uint = 1
 	for i := 0; i < int(length); i++ {
 		key, next := readString(data[curr:])
+		next += curr
 
 		dataLen := binary.BigEndian.Uint32(data[next : next+4])
 		valStart := next + 4
@@ -176,7 +177,11 @@ func (m *Message) marshalMetadata() []byte {
 
 	for k, v := range m.Metadata {
 		res = append(res, []byte(k)...)
-		binary.BigEndian.AppendUint32(res, uint32(len(v)))
+		res = append(res, '\n')
+
+		lenBytes := make([]byte, 4)
+		binary.BigEndian.PutUint32(lenBytes, uint32(len(v)))
+		res = append(res, lenBytes...)
 		res = append(res, v...)
 	}
 	return res
