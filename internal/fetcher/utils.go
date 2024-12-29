@@ -13,7 +13,12 @@ import (
 
 func get(link *url.URL) ([]byte, time.Duration, error) {
 	start := time.Now()
-	resp, err := http.Get(link.String())
+
+	client := http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Get(link.String())
 	if err != nil {
 		return nil, time.Duration(-1), err
 	}

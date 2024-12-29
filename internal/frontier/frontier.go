@@ -1,8 +1,6 @@
 package frontier
 
 import (
-	"bufio"
-	"bytes"
 	"errors"
 	"fmt"
 	"log"
@@ -11,7 +9,6 @@ import (
 	"time"
 
 	"github.com/syndtr/goleveldb/leveldb"
-	boom "github.com/tylertreat/BoomFilters"
 	"github.com/xunterr/crawler/pkg/queues"
 )
 
@@ -80,8 +77,7 @@ type BfFrontier struct {
 	queueMap map[string]*FrontierQueue
 	qmMu     sync.Mutex
 
-	bloom map[string]*boom.ScalableBloomFilter
-	blMu  sync.Mutex
+	bloom *bloom
 
 	maxActiveQueues int
 	nextQueue       *queues.PriorityQueue[string]
@@ -91,6 +87,7 @@ type BfFrontier struct {
 	rtMu         sync.Mutex
 
 	inactiveQueues queues.Queue[string]
+	iqMu           sync.Mutex
 
 	qeMu       sync.Mutex
 	onQueueEnd map[string][]chan struct{}
@@ -104,10 +101,12 @@ func NewBfFrontier(qp QueueProvider) *BfFrontier {
 
 		queueProvider: qp,
 
-		queueMap:        make(map[string]*FrontierQueue),
-		block:           sync.NewCond(new(sync.Mutex)),
-		bloom:           make(map[string]*boom.ScalableBloomFilter),
-		maxActiveQueues: 128,
+		queueMap: make(map[string]*FrontierQueue),
+		block:    sync.NewCond(new(sync.Mutex)),
+
+		bloom: newBloom(),
+
+		maxActiveQueues: 256,
 		responseTime:    make(map[string]time.Duration),
 		nextQueue:       pq,
 		inactiveQueues:  queues.NewQueue[string](),
@@ -115,7 +114,7 @@ func NewBfFrontier(qp QueueProvider) *BfFrontier {
 	}
 
 	go func() {
-		t := time.Tick(time.Duration(time.Second * 5))
+		t := time.Tick(time.Duration(time.Second * 2))
 		for range t {
 			f.displayDebug()
 		}
@@ -126,8 +125,22 @@ func NewBfFrontier(qp QueueProvider) *BfFrontier {
 
 func (f *BfFrontier) displayDebug() {
 	fmt.Printf("Active queues: %d\n", f.activeQueues)
+	fmt.Printf("Actual active queues: %d\n", f.calculateActiveQueues())
 	fmt.Printf("Ready queues: %d\n", f.nextQueue.Length())
 	fmt.Printf("Inactive queues: %d\n", f.inactiveQueues.Len())
+}
+
+func (f *BfFrontier) calculateActiveQueues() int {
+	f.qmMu.Lock()
+	f.qmMu.Unlock()
+	var counter int
+	for _, v := range f.queueMap {
+		if v.isActive {
+			counter++
+		}
+	}
+
+	return counter
 }
 
 func (f *BfFrontier) Get() (*url.URL, time.Time, error) {
@@ -136,33 +149,49 @@ func (f *BfFrontier) Get() (*url.URL, time.Time, error) {
 		return nil, time.Time{}, errors.New("Failed to get new queue index")
 	}
 
-	f.qmMu.Lock()
-	queue, ok := f.queueMap[queueIndex]
-	f.qmMu.Unlock()
-
+	u, ok := f.dequeueFrom(queueIndex)
 	if !ok {
-		log.Printf("Unable to retreive url queue %s", queueIndex)
-		return f.Get()
-	}
-
-	u, ok := queue.Dequeue()
-
-	if !ok {
-		f.setInactive(queueIndex)
-		f.wakeInactiveQueue()
-		return f.Get()
+		return nil, time.Time{}, errors.New("Failed to dequeue from queue")
 	}
 
 	url, err := url.Parse(u.Url)
 	if err != nil {
-		return f.Get()
+		return url, time.Time{}, err
 	}
 
 	return url, accessAt, nil
 }
 
+func (f *BfFrontier) dequeueFrom(queueId string) (Url, bool) {
+	f.qmMu.Lock()
+	queue, ok := f.queueMap[queueId]
+	f.qmMu.Unlock()
+
+	if !ok {
+		return Url{}, false
+	}
+
+	u, ok := queue.Dequeue()
+	if !ok {
+		f.swapQueue(queueId)
+		return Url{}, false
+	}
+
+	if !queue.isActive {
+		f.swapQueue(queueId)
+	}
+
+	return u, true
+}
+
+func (f *BfFrontier) swapQueue(queueId string) {
+	f.decreaseActiveCount()
+	f.enqueueInactiveId(queueId)
+	f.wakeInactiveQueue()
+}
+
 func (f *BfFrontier) Put(url *url.URL) error {
-	if f.checkBloom(url.Hostname(), []byte(url.String())) {
+	if f.bloom.checkBloom(url.Hostname(), []byte(url.String())) {
 		return nil
 	}
 
@@ -182,7 +211,7 @@ func (f *BfFrontier) Put(url *url.URL) error {
 		Url:    url.String(),
 		Weight: 1,
 	})
-	f.addBloom(url.Hostname(), []byte(url.String()))
+	f.bloom.addBloom(url.Hostname(), []byte(url.String()))
 	return nil
 }
 
@@ -206,9 +235,6 @@ func (f *BfFrontier) MarkProcessed(url *url.URL, ttr time.Duration) {
 	if queue.isActive {
 		after := f.getNextRequestTime(url.Hostname())
 		f.setNextQueue(url.Hostname(), after)
-	} else {
-		f.setInactive(url.Hostname())
-		f.wakeInactiveQueue()
 	}
 }
 
@@ -252,58 +278,6 @@ func (f *BfFrontier) NotifyOnEnd(queueID string) chan struct{} {
 	return ch
 }
 
-func (f *BfFrontier) addBloom(key string, entry []byte) {
-	f.blMu.Lock()
-	defer f.blMu.Unlock()
-	b, ok := f.bloom[key]
-	if !ok {
-		b = boom.NewDefaultScalableBloomFilter(0.01)
-		f.bloom[key] = b
-	}
-	b.Add(entry)
-}
-
-func (f *BfFrontier) checkBloom(key string, entry []byte) bool {
-	f.blMu.Lock()
-	defer f.blMu.Unlock()
-
-	b, ok := f.bloom[key]
-	if !ok {
-		return false
-	}
-
-	return b.Test(entry)
-}
-
-func (f *BfFrontier) setBloom(key string, bloom []byte) { //this library doesn't allow for merging two bloom filters
-	f.blMu.Lock()
-	defer f.blMu.Unlock()
-
-	r := bytes.NewReader(bloom)
-	bl := boom.NewDefaultScalableBloomFilter(0.1)
-	_, err := bl.ReadFrom(r)
-	if err != nil {
-		return
-	}
-
-	f.bloom[key] = bl
-}
-
-func (f *BfFrontier) getBloom(key string) []byte {
-	f.blMu.Lock()
-	defer f.blMu.Unlock()
-
-	b, ok := f.bloom[key]
-	if !ok {
-		return []byte{}
-	}
-
-	var buff bytes.Buffer
-	foo := bufio.NewWriter(&buff)
-	b.WriteTo(foo)
-	return buff.Bytes()
-}
-
 func (f *BfFrontier) setQueueLock(queueID string, locked bool) bool {
 	f.qmMu.Lock()
 	queue, ok := f.queueMap[queueID]
@@ -326,20 +300,12 @@ func (f *BfFrontier) setQueueLock(queueID string, locked bool) bool {
 	return true
 }
 
-func (f *BfFrontier) setInactive(queueID string) {
-	f.aqMu.Lock()
-	f.activeQueues -= 1
-	f.aqMu.Unlock()
-
-	f.inactiveQueues.Push(queueID)
-}
-
 func (f *BfFrontier) wakeInactiveQueue() {
 	if !f.canAddNewQueue() {
 		return
 	}
 
-	id, queue, ok := f.popNextInactiveQueue(f.inactiveQueues.Len() % 512)
+	id, queue, ok := f.findAvailableInactiveQueue(f.inactiveQueues.Len() % 512)
 	if !ok {
 		return
 	}
@@ -351,16 +317,26 @@ func (f *BfFrontier) wakeInactiveQueue() {
 	f.qmMu.Unlock()
 
 	f.setNextQueue(id, time.Now().UTC())
-
-	f.aqMu.Lock()
-	f.activeQueues += 1
-	f.aqMu.Unlock()
+	f.increaseActiveCount()
 }
 
-func (f *BfFrontier) popNextInactiveQueue(depth int) (string, *FrontierQueue, bool) {
+func (f *BfFrontier) increaseActiveCount() uint32 {
+	f.aqMu.Lock()
+	f.activeQueues += 1
+	defer f.aqMu.Unlock()
+	return f.activeQueues
+}
+
+func (f *BfFrontier) decreaseActiveCount() uint32 {
+	f.aqMu.Lock()
+	f.activeQueues -= 1
+	defer f.aqMu.Unlock()
+	return f.activeQueues
+}
+
+func (f *BfFrontier) findAvailableInactiveQueue(depth int) (string, *FrontierQueue, bool) {
 	for i := depth; i > 0; i-- {
-		var inactiveQueueID string
-		ok := f.inactiveQueues.Pop(&inactiveQueueID)
+		inactiveQueueID, ok := f.dequeueInactiveId()
 		if !ok {
 			return "", nil, false
 		}
@@ -375,11 +351,24 @@ func (f *BfFrontier) popNextInactiveQueue(depth int) (string, *FrontierQueue, bo
 		if !inactiveQueue.IsLocked() && !inactiveQueue.IsEmpty() {
 			return inactiveQueueID, inactiveQueue, true
 		} else {
-			f.inactiveQueues.Push(inactiveQueueID)
+			f.enqueueInactiveId(inactiveQueueID)
 		}
 	}
 
 	return "", nil, false
+}
+
+func (f *BfFrontier) enqueueInactiveId(queueId string) {
+	f.iqMu.Lock()
+	f.inactiveQueues.Push(queueId)
+	f.iqMu.Unlock()
+}
+
+func (f *BfFrontier) dequeueInactiveId() (id string, ok bool) {
+	f.iqMu.Lock()
+	ok = f.inactiveQueues.Pop(&id)
+	f.iqMu.Unlock()
+	return
 }
 
 func (f *BfFrontier) canAddNewQueue() bool {
@@ -432,7 +421,6 @@ func (f *BfFrontier) addNewDefaultQueue(queueID string) (*FrontierQueue, error) 
 }
 
 func (f *BfFrontier) addNewQueue(host string, q queues.Queue[Url]) *FrontierQueue {
-
 	active := f.canAddNewQueue()
 	queue := NewFrontierQueue(q, active, 20)
 
@@ -441,14 +429,11 @@ func (f *BfFrontier) addNewQueue(host string, q queues.Queue[Url]) *FrontierQueu
 	f.qmMu.Unlock()
 
 	if active {
-		f.aqMu.Lock()
-		f.activeQueues++
-		f.aqMu.Unlock()
-
+		f.increaseActiveCount()
 		nextRequest := f.getNextRequestTime(host)
 		f.setNextQueue(host, nextRequest)
 	} else {
-		f.inactiveQueues.Push(host)
+		f.enqueueInactiveId(host)
 	}
 
 	return queue

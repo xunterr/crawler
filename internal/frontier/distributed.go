@@ -150,7 +150,7 @@ func (d *DistributedFrontier) sendKeyNotify(conn net.Conn, key string) error {
 	<-d.frontier.NotifyOnEnd(key)
 	notification := &pb.KeyLockNotification{
 		Key:   key,
-		Bloom: d.frontier.getBloom(key),
+		Bloom: d.frontier.bloom.getBloom(key),
 	}
 
 	d.logger.Logw(zapcore.InfoLevel,
@@ -184,7 +184,7 @@ func (d *DistributedFrontier) keyLockNotifyHandler(ctx p2p.Context, data chan []
 
 		d.logger.Infof("Unlocking key: %s", notif.Key)
 		d.frontier.setQueueLock(notif.Key, false)
-		d.frontier.setBloom(notif.Key, notif.Bloom)
+		d.frontier.bloom.setBloom(notif.Key, notif.Bloom)
 	}
 }
 

@@ -161,7 +161,7 @@ func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fetcher fetcher
 		url, accessAt, err := frontier.Get()
 		if err != nil {
 			log.Println(err)
-			return
+			continue
 		}
 
 		go func() {
