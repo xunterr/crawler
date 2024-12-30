@@ -6,3 +6,4 @@ metrics.*
 *.csv
 log*
 *.png
+data/*

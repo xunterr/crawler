@@ -1,4 +1,4 @@
-package frontier
+package bloom
 
 import (
 	"bufio"
@@ -8,18 +8,25 @@ import (
 	boom "github.com/tylertreat/BoomFilters"
 )
 
-type bloom struct {
+type Bloom interface {
+	AddBloom(key string, entry []byte) error
+	CheckBloom(key string, entry []byte) (bool, error)
+	SetBloom(key string, entry []byte) (bool, error)
+	GetBloom(key string) ([]byte, error)
+}
+
+type InMemoryBloom struct {
 	blooms map[string]*boom.ScalableBloomFilter
 	blMu   sync.Mutex
 }
 
-func newBloom() *bloom {
-	return &bloom{
+func NewInMemoryBloom() *InMemoryBloom {
+	return &InMemoryBloom{
 		blooms: make(map[string]*boom.ScalableBloomFilter),
 	}
 }
 
-func (b *bloom) addBloom(key string, entry []byte) {
+func (b *InMemoryBloom) AddBloom(key string, entry []byte) error {
 	b.blMu.Lock()
 	defer b.blMu.Unlock()
 	bloom, ok := b.blooms[key]
@@ -28,21 +35,22 @@ func (b *bloom) addBloom(key string, entry []byte) {
 		b.blooms[key] = bloom
 	}
 	bloom.Add(entry)
+	return nil
 }
 
-func (b *bloom) checkBloom(key string, entry []byte) bool {
+func (b *InMemoryBloom) CheckBloom(key string, entry []byte) (bool, error) {
 	b.blMu.Lock()
 	defer b.blMu.Unlock()
 
 	bloom, ok := b.blooms[key]
 	if !ok {
-		return false
+		return false, nil
 	}
 
-	return bloom.Test(entry)
+	return bloom.Test(entry), nil
 }
 
-func (b *bloom) setBloom(key string, bloom []byte) { //this library doesn't allow for merging two bloom filters
+func (b *InMemoryBloom) SetBloom(key string, bloom []byte) (bool, error) { //this library doesn't allow for merging two bloom filters
 	b.blMu.Lock()
 	defer b.blMu.Unlock()
 
@@ -50,23 +58,24 @@ func (b *bloom) setBloom(key string, bloom []byte) { //this library doesn't allo
 	bl := boom.NewDefaultScalableBloomFilter(0.1)
 	_, err := bl.ReadFrom(r)
 	if err != nil {
-		return
+		return false, nil
 	}
 
 	b.blooms[key] = bl
+	return true, nil
 }
 
-func (b *bloom) getBloom(key string) []byte {
+func (b *InMemoryBloom) GetBloom(key string) ([]byte, error) {
 	b.blMu.Lock()
 	defer b.blMu.Unlock()
 
 	bloom, ok := b.blooms[key]
 	if !ok {
-		return []byte{}
+		return []byte{}, nil
 	}
 
 	var buff bytes.Buffer
 	writer := bufio.NewWriter(&buff)
 	bloom.WriteTo(writer)
-	return buff.Bytes()
+	return buff.Bytes(), nil
 }

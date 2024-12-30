@@ -11,10 +11,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/linxGnu/grocksdb"
 	"github.com/paulbellamy/ratecounter"
 	"github.com/xunterr/crawler/internal/fetcher"
 	"github.com/xunterr/crawler/internal/frontier"
 	p2p "github.com/xunterr/crawler/internal/net"
+	"github.com/xunterr/crawler/pkg/bloom"
 	"github.com/xunterr/crawler/proto"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -142,7 +144,23 @@ func makeDistributedFrontier(logger *zap.SugaredLogger) frontier.Frontier {
 
 func makeFrontier() frontier.Frontier {
 	qp := frontier.InMemoryQueueProvider{}
-	return frontier.NewBfFrontier(qp)
+
+	db, err := openRocksDB("data/bloom/")
+	if err != nil {
+		panic(err.Error())
+	}
+
+	bloom := bloom.NewRocksdbBloom(db)
+	return frontier.NewBfFrontier(qp, bloom)
+}
+
+func openRocksDB(path string) (*grocksdb.DB, error) {
+	bbto := grocksdb.NewDefaultBlockBasedTableOptions()
+	bbto.SetBlockCache(grocksdb.NewLRUCache(3 << 30))
+	opts := grocksdb.NewDefaultOptions()
+	opts.SetBlockBasedTableFactory(bbto)
+	opts.SetCreateIfMissing(true)
+	return grocksdb.OpenDb(opts, path)
 }
 
 func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fet fetcher.Fetcher) {

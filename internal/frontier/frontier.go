@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/syndtr/goleveldb/leveldb"
+	"github.com/xunterr/crawler/pkg/bloom"
 	"github.com/xunterr/crawler/pkg/queues"
 )
 
@@ -77,7 +78,7 @@ type BfFrontier struct {
 	queueMap map[string]*FrontierQueue
 	qmMu     sync.Mutex
 
-	bloom *bloom
+	bloom bloom.Bloom
 
 	maxActiveQueues int
 	nextQueue       *queues.PriorityQueue[string]
@@ -93,7 +94,7 @@ type BfFrontier struct {
 	onQueueEnd map[string][]chan struct{}
 }
 
-func NewBfFrontier(qp QueueProvider) *BfFrontier {
+func NewBfFrontier(qp QueueProvider, bloom bloom.Bloom) *BfFrontier {
 	pq := queues.NewPriorityQueue[string]()
 
 	f := &BfFrontier{
@@ -104,7 +105,7 @@ func NewBfFrontier(qp QueueProvider) *BfFrontier {
 		queueMap: make(map[string]*FrontierQueue),
 		block:    sync.NewCond(new(sync.Mutex)),
 
-		bloom: newBloom(),
+		bloom: bloom,
 
 		maxActiveQueues: 256,
 		responseTime:    make(map[string]time.Duration),
@@ -132,7 +133,7 @@ func (f *BfFrontier) displayDebug() {
 
 func (f *BfFrontier) calculateActiveQueues() int {
 	f.qmMu.Lock()
-	f.qmMu.Unlock()
+	defer f.qmMu.Unlock()
 	var counter int
 	for _, v := range f.queueMap {
 		if v.isActive {
@@ -191,7 +192,9 @@ func (f *BfFrontier) swapQueue(queueId string) {
 }
 
 func (f *BfFrontier) Put(url *url.URL) error {
-	if f.bloom.checkBloom(url.Hostname(), []byte(url.String())) {
+	ok, _ := f.bloom.CheckBloom(url.Hostname(), []byte(url.String()))
+
+	if !ok {
 		return nil
 	}
 
@@ -211,8 +214,7 @@ func (f *BfFrontier) Put(url *url.URL) error {
 		Url:    url.String(),
 		Weight: 1,
 	})
-	f.bloom.addBloom(url.Hostname(), []byte(url.String()))
-	return nil
+	return f.bloom.AddBloom(url.Hostname(), []byte(url.String()))
 }
 
 func (f *BfFrontier) MarkProcessed(url *url.URL, ttr time.Duration) {
