@@ -10,6 +10,7 @@ import (
 )
 
 type Response struct {
+	Url   *url.URL
 	TTR   time.Duration
 	Links []*url.URL
 }
@@ -58,6 +59,7 @@ func (df *DefaultFetcher) Fetch(page *url.URL) (Response, error) {
 	}()
 
 	return Response{
+		Url:   page,
 		Links: linksNormalized,
 		TTR:   ttr,
 	}, nil

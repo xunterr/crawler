@@ -145,12 +145,13 @@ func makeFrontier() frontier.Frontier {
 	return frontier.NewBfFrontier(qp)
 }
 
-func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fetcher fetcher.Fetcher) {
+func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fet fetcher.Fetcher) {
 	var wg sync.WaitGroup
 	counter := ratecounter.NewRateCounter(1 * time.Second)
 	var total uint32
 
 	urls := make(chan resource, 128)
+	processed := make(chan fetcher.Response, 16)
 
 	go func() {
 		t := time.Tick(5 * time.Second)
@@ -159,14 +160,24 @@ func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fetcher fetcher
 		}
 	}()
 
+	go func() {
+		for r := range processed {
+			frontier.MarkProcessed(r.Url, r.TTR)
+			counter.Incr(1)
+			total++
+			for _, u := range r.Links {
+				err := frontier.Put(u)
+				if err != nil {
+					logger.Errorln(err.Error())
+				}
+			}
+		}
+	}()
+
 	for i := 0; i < 128; i++ {
 		wg.Add(1)
-		go worker(&wg, logger, &metrics{
-			count: counter,
-			total: &total,
-		}, frontier, fetcher, urls)
+		go worker(&wg, fet, urls, processed)
 	}
-
 	for {
 		url, accessAt, err := frontier.Get()
 		if err != nil {
@@ -185,13 +196,12 @@ type resource struct {
 	at time.Time
 }
 
-type metrics struct {
-	count *ratecounter.RateCounter
-	total *uint32
-	tMu   sync.Mutex
+type response struct {
+	url  *url.URL
+	info *fetcher.PageInfo
 }
 
-func worker(wg *sync.WaitGroup, logger *zap.SugaredLogger, metrics *metrics, frontier frontier.Frontier, fetcher fetcher.Fetcher, urls chan resource) {
+func worker(wg *sync.WaitGroup, fetcher fetcher.Fetcher, urls chan resource, processed chan fetcher.Response) {
 	for u := range urls {
 		time.Sleep(time.Until(u.at))
 
@@ -200,19 +210,7 @@ func worker(wg *sync.WaitGroup, logger *zap.SugaredLogger, metrics *metrics, fro
 			continue
 		}
 
-		frontier.MarkProcessed(u.u, resp.TTR)
-
-		for _, e := range resp.Links {
-			err := frontier.Put(e)
-			if err != nil {
-				logger.Errorln(err.Error())
-			}
-		}
-
-		metrics.count.Incr(1)
-		metrics.tMu.Lock()
-		*metrics.total++
-		metrics.tMu.Unlock()
+		processed <- resp
 	}
 
 	wg.Done()
