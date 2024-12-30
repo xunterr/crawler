@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/paulbellamy/ratecounter"
@@ -147,15 +146,26 @@ func makeFrontier() frontier.Frontier {
 }
 
 func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fetcher fetcher.Fetcher) {
+	var wg sync.WaitGroup
 	counter := ratecounter.NewRateCounter(1 * time.Second)
-	var total atomic.Uint64
+	var total uint32
+
+	urls := make(chan resource, 128)
 
 	go func() {
 		t := time.Tick(5 * time.Second)
 		for range t {
-			logger.Infof("Ops/sec: %d; Total: %d", counter.Rate(), total.Load())
+			logger.Infof("Ops/sec: %d; Total: %d", counter.Rate(), total)
 		}
 	}()
+
+	for i := 0; i < 128; i++ {
+		wg.Add(1)
+		go worker(&wg, logger, &metrics{
+			count: counter,
+			total: &total,
+		}, frontier, fetcher, urls)
+	}
 
 	for {
 		url, accessAt, err := frontier.Get()
@@ -163,26 +173,47 @@ func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fetcher fetcher
 			log.Println(err)
 			continue
 		}
-
-		go func() {
-			time.Sleep(time.Until(accessAt))
-
-			resp, err := fetcher.Fetch(url)
-			if err != nil {
-				return
-			}
-
-			frontier.MarkProcessed(url, resp.TTR)
-
-			for _, e := range resp.Links {
-				err := frontier.Put(e)
-				if err != nil {
-					logger.Errorln(err.Error())
-				}
-			}
-
-			counter.Incr(1)
-			total.Add(1)
-		}()
+		urls <- resource{
+			u:  url,
+			at: accessAt,
+		}
 	}
+}
+
+type resource struct {
+	u  *url.URL
+	at time.Time
+}
+
+type metrics struct {
+	count *ratecounter.RateCounter
+	total *uint32
+	tMu   sync.Mutex
+}
+
+func worker(wg *sync.WaitGroup, logger *zap.SugaredLogger, metrics *metrics, frontier frontier.Frontier, fetcher fetcher.Fetcher, urls chan resource) {
+	for u := range urls {
+		time.Sleep(time.Until(u.at))
+
+		resp, err := fetcher.Fetch(u.u)
+		if err != nil {
+			continue
+		}
+
+		frontier.MarkProcessed(u.u, resp.TTR)
+
+		for _, e := range resp.Links {
+			err := frontier.Put(e)
+			if err != nil {
+				logger.Errorln(err.Error())
+			}
+		}
+
+		metrics.count.Incr(1)
+		metrics.tMu.Lock()
+		*metrics.total++
+		metrics.tMu.Unlock()
+	}
+
+	wg.Done()
 }
