@@ -8,13 +8,20 @@ import (
 	"github.com/xunterr/crawler/internal/storage"
 )
 
+type Encoder[T any] func(T) ([]byte, error)
+type Decoder[T any] func([]byte) (T, error)
+
 type RocksdbStorage[V any] struct {
-	db *grocksdb.DB
+	db     *grocksdb.DB
+	encode Encoder[V]
+	decode Decoder[V]
 }
 
-func NewRocksdbStorage[V any](db *grocksdb.DB) *RocksdbStorage[V] {
+func NewRocksdbStorage[V any](db *grocksdb.DB, encoder Encoder[V], decoder Decoder[V]) *RocksdbStorage[V] {
 	return &RocksdbStorage[V]{
-		db: db,
+		encode: encoder,
+		decode: decoder,
+		db:     db,
 	}
 }
 
@@ -29,13 +36,11 @@ func (s *RocksdbStorage[V]) Get(key string) (V, error) {
 		return *new(V), storage.NoSuchKeyError
 	}
 
-	var res V
-	err = s.gobDecode(value.Data(), &res)
-	return res, err
+	return s.decode(value.Data())
 }
 
 func (s *RocksdbStorage[V]) Put(key string, value V) error {
-	bytes, err := s.gobEncode(value)
+	bytes, err := s.encode(value)
 	if err != nil {
 		return err
 	}
@@ -50,7 +55,8 @@ func (s *RocksdbStorage[V]) Delete(key string) error {
 func (s *RocksdbStorage[V]) gobEncode(from any) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := gob.NewEncoder(&buf)
-	if err := enc.Encode(from); err != nil {
+	gob.Register(from)
+	if err := enc.Encode(&from); err != nil {
 		return nil, err
 	}
 

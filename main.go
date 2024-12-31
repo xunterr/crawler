@@ -2,9 +2,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/url"
 	"os"
@@ -13,10 +15,11 @@ import (
 
 	"github.com/linxGnu/grocksdb"
 	"github.com/paulbellamy/ratecounter"
+	boom "github.com/tylertreat/BoomFilters"
 	"github.com/xunterr/crawler/internal/fetcher"
 	"github.com/xunterr/crawler/internal/frontier"
 	p2p "github.com/xunterr/crawler/internal/net"
-	"github.com/xunterr/crawler/pkg/bloom"
+	"github.com/xunterr/crawler/internal/storage/rocksdb"
 	"github.com/xunterr/crawler/proto"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -150,8 +153,26 @@ func makeFrontier() frontier.Frontier {
 		panic(err.Error())
 	}
 
-	bloom := bloom.NewRocksdbBloom(db)
-	return frontier.NewBfFrontier(qp, bloom)
+	storage := rocksdb.NewRocksdbStorage[*boom.ScalableBloomFilter](db, encode, decode)
+	return frontier.NewBfFrontier(qp, storage)
+}
+
+func encode(bloom *boom.ScalableBloomFilter) ([]byte, error) {
+	var bytes bytes.Buffer
+	writer := io.Writer(&bytes)
+	bloom.WriteTo(writer)
+	return bytes.Bytes(), nil
+}
+
+func decode(data []byte) (*boom.ScalableBloomFilter, error) {
+	bloom := boom.NewDefaultScalableBloomFilter(0.01)
+	buf := bytes.NewReader(data)
+	_, err := bloom.ReadFrom(buf)
+
+	if err != nil {
+		return nil, err
+	}
+	return bloom, err
 }
 
 func openRocksDB(path string) (*grocksdb.DB, error) {
