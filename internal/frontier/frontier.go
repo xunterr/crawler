@@ -14,7 +14,7 @@ import (
 
 type Frontier interface {
 	Get() (*url.URL, time.Time, error)
-	MarkProcessed(*url.URL, time.Duration)
+	MarkProcessed(*url.URL, time.Duration) error
 	Put(*url.URL) error
 }
 
@@ -144,6 +144,27 @@ func (f *BfFrontier) calculateActiveQueues() int {
 }
 
 func (f *BfFrontier) Get() (*url.URL, time.Time, error) {
+	for {
+		//		start := time.Now()
+		url, accessAt, err := f.getNextUrl()
+		//		took := time.Now().Sub(start)
+		//		fmt.Printf("Call to Get() took %s\n", took.String())
+		if err != nil {
+			return nil, time.Time{}, err
+		}
+
+		ok, err := f.bloom.checkBloom(url.Hostname(), []byte(url.String()))
+		if err != nil {
+			return nil, time.Time{}, err
+		}
+
+		if !ok {
+			return url, accessAt, nil
+		}
+	}
+}
+
+func (f *BfFrontier) getNextUrl() (*url.URL, time.Time, error) {
 	queueIndex, accessAt, ok := f.getNextQueue()
 	if !ok {
 		return nil, time.Time{}, errors.New("Failed to get new queue index")
@@ -151,7 +172,7 @@ func (f *BfFrontier) Get() (*url.URL, time.Time, error) {
 
 	u, ok := f.dequeueFrom(queueIndex)
 	if !ok {
-		return nil, time.Time{}, errors.New("Failed to dequeue from queue")
+		return nil, time.Time{}, errors.New(fmt.Sprintf("Failed to dequeue from queue: %s", queueIndex))
 	}
 
 	url, err := url.Parse(u.Url)
@@ -177,9 +198,9 @@ func (f *BfFrontier) dequeueFrom(queueId string) (Url, bool) {
 		return Url{}, false
 	}
 
-	if !queue.isActive {
-		f.swapQueue(queueId)
-	}
+	//	if !queue.isActive {
+	//		f.swapQueue(queueId)
+	//	}
 
 	return u, true
 }
@@ -216,10 +237,10 @@ func (f *BfFrontier) Put(url *url.URL) error {
 		Url:    url.String(),
 		Weight: 1,
 	})
-	return f.bloom.addBloom(url.Hostname(), []byte(url.String()))
+	return nil
 }
 
-func (f *BfFrontier) MarkProcessed(url *url.URL, ttr time.Duration) {
+func (f *BfFrontier) MarkProcessed(url *url.URL, ttr time.Duration) error {
 	f.rtMu.Lock()
 	f.responseTime[url.Hostname()] = ttr
 	f.rtMu.Unlock()
@@ -229,17 +250,17 @@ func (f *BfFrontier) MarkProcessed(url *url.URL, ttr time.Duration) {
 	f.qmMu.Unlock()
 
 	if !ok {
-		return
+		return errors.New("No such queue")
 	}
 
 	if queue.IsEmpty() {
 		go f.notifyAllOnEnd(url.Hostname())
 	}
 
-	if queue.isActive {
-		after := f.getNextRequestTime(url.Hostname())
-		f.setNextQueue(url.Hostname(), after)
-	}
+	after := f.getNextRequestTime(url.Hostname())
+	f.setNextQueue(url.Hostname(), after)
+
+	return f.bloom.addBloom(url.Hostname(), []byte(url.String()))
 }
 
 func (f *BfFrontier) notifyAllOnEnd(queueID string) {
@@ -309,7 +330,7 @@ func (f *BfFrontier) wakeInactiveQueue() {
 		return
 	}
 
-	id, queue, ok := f.findAvailableInactiveQueue(f.inactiveQueues.Len() % 512)
+	id, queue, ok := f.findAvailableInactiveQueue(f.inactiveQueues.Len())
 	if !ok {
 		return
 	}
@@ -387,7 +408,7 @@ func (f *BfFrontier) getNextRequestTime(host string) time.Time {
 
 	f.rtMu.Lock()
 	if responseTime, ok := f.responseTime[host]; ok {
-		after = responseTime * 10
+		after = responseTime * 4
 	}
 	f.rtMu.Unlock()
 

@@ -84,8 +84,8 @@ func (d *DistributedFrontier) Get() (*url.URL, time.Time, error) {
 	return d.frontier.Get()
 }
 
-func (d *DistributedFrontier) MarkProcessed(u *url.URL, ttr time.Duration) {
-	d.frontier.MarkProcessed(u, ttr)
+func (d *DistributedFrontier) MarkProcessed(u *url.URL, ttr time.Duration) error {
+	return d.frontier.MarkProcessed(u, ttr)
 }
 
 func (d *DistributedFrontier) Put(u *url.URL) error {

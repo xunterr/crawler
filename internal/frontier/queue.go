@@ -48,7 +48,7 @@ func (q *FrontierQueue) Dequeue() (Url, bool) {
 		q.sessionBudget -= uint64(url.Weight)
 	}
 
-	if q.sessionBudget == 0 || q.IsEmpty() {
+	if q.sessionBudget == 0 {
 		q.isActive = false
 	}
 

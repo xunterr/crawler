@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net/url"
 	"os"
 	"sync"
@@ -19,7 +18,7 @@ import (
 	"github.com/xunterr/crawler/internal/fetcher"
 	"github.com/xunterr/crawler/internal/frontier"
 	p2p "github.com/xunterr/crawler/internal/net"
-	"github.com/xunterr/crawler/internal/storage/rocksdb"
+	"github.com/xunterr/crawler/internal/storage/inmem"
 	"github.com/xunterr/crawler/proto"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -148,12 +147,13 @@ func makeDistributedFrontier(logger *zap.SugaredLogger) frontier.Frontier {
 func makeFrontier() frontier.Frontier {
 	qp := frontier.InMemoryQueueProvider{}
 
-	db, err := openRocksDB("data/bloom/")
-	if err != nil {
-		panic(err.Error())
-	}
+	//	db, err := openRocksDB("data/bloom/")
+	//	if err != nil {
+	//		panic(err.Error())
+	//	}
 
-	storage := rocksdb.NewRocksdbStorage[*boom.ScalableBloomFilter](db, encode, decode)
+	//storage := rocksdb.NewRocksdbStorage[*boom.ScalableBloomFilter](db, encode, decode)
+	storage := inmem.NewInMemoryStorage[*boom.ScalableBloomFilter]()
 	return frontier.NewBfFrontier(qp, storage)
 }
 
@@ -196,6 +196,7 @@ func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fet fetcher.Fet
 		t := time.Tick(5 * time.Second)
 		for range t {
 			logger.Infof("Ops/sec: %d; Total: %d", counter.Rate(), total)
+			logger.Infof("Len of urls buffer: %d, len of processed buffer: %d", len(urls), len(processed))
 		}
 	}()
 
@@ -213,14 +214,13 @@ func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fet fetcher.Fet
 		}
 	}()
 
-	for i := 0; i < 128; i++ {
+	for i := 0; i < 256; i++ {
 		wg.Add(1)
 		go worker(&wg, fet, urls, processed)
 	}
 	for {
 		url, accessAt, err := frontier.Get()
 		if err != nil {
-			log.Println(err)
 			continue
 		}
 		urls <- resource{

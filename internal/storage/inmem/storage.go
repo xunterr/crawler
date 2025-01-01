@@ -11,6 +11,12 @@ type InMemoryStorage[V any] struct {
 	storeMu sync.Mutex
 }
 
+func NewInMemoryStorage[V any]() *InMemoryStorage[V] {
+	return &InMemoryStorage[V]{
+		store: make(map[string]V),
+	}
+}
+
 func (s *InMemoryStorage[V]) Get(key string) (V, error) {
 	s.storeMu.Lock()
 	defer s.storeMu.Unlock()
