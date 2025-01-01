@@ -145,20 +145,20 @@ func (f *BfFrontier) calculateActiveQueues() int {
 
 func (f *BfFrontier) Get() (*url.URL, time.Time, error) {
 	for {
-		//		start := time.Now()
 		url, accessAt, err := f.getNextUrl()
-		//		took := time.Now().Sub(start)
-		//		fmt.Printf("Call to Get() took %s\n", took.String())
 		if err != nil {
 			return nil, time.Time{}, err
 		}
 
-		ok, err := f.bloom.checkBloom(url.Hostname(), []byte(url.String()))
+		hit, err := f.bloom.checkBloom(url.Hostname(), []byte(url.String()))
 		if err != nil {
+			println(err.Error())
 			return nil, time.Time{}, err
 		}
 
-		if !ok {
+		if hit {
+			f.setNextQueue(url.Hostname(), f.getNextRequestTime(url.Hostname()))
+		} else {
 			return url, accessAt, nil
 		}
 	}
@@ -198,9 +198,9 @@ func (f *BfFrontier) dequeueFrom(queueId string) (Url, bool) {
 		return Url{}, false
 	}
 
-	//	if !queue.isActive {
-	//		f.swapQueue(queueId)
-	//	}
+	//if !queue.isActive {
+	//	f.swapQueue(queueId)
+	//}
 
 	return u, true
 }
@@ -455,8 +455,7 @@ func (f *BfFrontier) addNewQueue(host string, q queues.Queue[Url]) *FrontierQueu
 
 	if active {
 		f.increaseActiveCount()
-		nextRequest := f.getNextRequestTime(host)
-		f.setNextQueue(host, nextRequest)
+		f.setNextQueue(host, time.Now().UTC())
 	} else {
 		f.enqueueInactiveId(host)
 	}

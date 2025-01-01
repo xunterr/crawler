@@ -18,7 +18,7 @@ import (
 	"github.com/xunterr/crawler/internal/fetcher"
 	"github.com/xunterr/crawler/internal/frontier"
 	p2p "github.com/xunterr/crawler/internal/net"
-	"github.com/xunterr/crawler/internal/storage/inmem"
+	"github.com/xunterr/crawler/internal/storage/rocksdb"
 	"github.com/xunterr/crawler/proto"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -147,13 +147,13 @@ func makeDistributedFrontier(logger *zap.SugaredLogger) frontier.Frontier {
 func makeFrontier() frontier.Frontier {
 	qp := frontier.InMemoryQueueProvider{}
 
-	//	db, err := openRocksDB("data/bloom/")
-	//	if err != nil {
-	//		panic(err.Error())
-	//	}
+	db, err := openRocksDB("data/bloom/")
+	if err != nil {
+		panic(err.Error())
+	}
 
-	//storage := rocksdb.NewRocksdbStorage[*boom.ScalableBloomFilter](db, encode, decode)
-	storage := inmem.NewInMemoryStorage[*boom.ScalableBloomFilter]()
+	storage := rocksdb.NewRocksdbStorage[*boom.ScalableBloomFilter](db, encode, decode)
+	//storage := inmem.NewInMemoryStorage[*boom.ScalableBloomFilter]()
 	return frontier.NewBfFrontier(qp, storage)
 }
 
@@ -202,7 +202,6 @@ func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fet fetcher.Fet
 
 	go func() {
 		for r := range processed {
-			frontier.MarkProcessed(r.Url, r.TTR)
 			counter.Incr(1)
 			total++
 			for _, u := range r.Links {
@@ -211,6 +210,7 @@ func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fet fetcher.Fet
 					logger.Errorln(err.Error())
 				}
 			}
+			frontier.MarkProcessed(r.Url, r.TTR)
 		}
 	}()
 
@@ -223,6 +223,7 @@ func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fet fetcher.Fet
 		if err != nil {
 			continue
 		}
+
 		urls <- resource{
 			u:  url,
 			at: accessAt,
@@ -242,14 +243,17 @@ type response struct {
 
 func worker(wg *sync.WaitGroup, fetcher fetcher.Fetcher, urls chan resource, processed chan fetcher.Response) {
 	for u := range urls {
-		time.Sleep(time.Until(u.at))
+		if time.Until(u.at).Seconds() > 10 {
+			time.Sleep(10 * time.Second)
+		} else {
+			time.Sleep(time.Until(u.at))
+		}
 
 		resp, err := fetcher.Fetch(u.u)
+		processed <- resp
 		if err != nil {
 			continue
 		}
-
-		processed <- resp
 	}
 
 	wg.Done()

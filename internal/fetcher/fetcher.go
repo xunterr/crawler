@@ -31,12 +31,12 @@ func NewDefaultFetcher(logger *zap.Logger, client pb.IndexerClient) *DefaultFetc
 func (df *DefaultFetcher) Fetch(page *url.URL) (Response, error) {
 	data, ttr, err := get(page)
 	if err != nil {
-		return Response{}, err
+		return Response{Url: page, Links: nil, TTR: ttr}, err
 	}
 
 	pageInfo, err := parsePage(data)
 	if err != nil {
-		return Response{}, err
+		return Response{Url: page, Links: nil, TTR: ttr}, err
 	}
 
 	var linksNormalized []*url.URL
