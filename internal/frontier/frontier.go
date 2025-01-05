@@ -68,7 +68,15 @@ func (qp *PersistentQueueProvider) GetAll() (map[string]queues.Queue[Url], error
 	return queueMap, nil
 }
 
+type BfFrontierConfig struct {
+	MaxActiveQueues      int
+	PolitenessMultiplier int
+	DefaultSessionBudget int
+}
+
 type BfFrontier struct {
+	conf BfFrontierConfig
+
 	activeQueues uint32
 	aqMu         sync.Mutex
 
@@ -79,9 +87,8 @@ type BfFrontier struct {
 
 	bloom *bloom
 
-	maxActiveQueues int
-	nextQueue       *queues.PriorityQueue[string]
-	block           *sync.Cond
+	nextQueue *queues.PriorityQueue[string]
+	block     *sync.Cond
 
 	responseTime map[string]time.Duration
 	rtMu         sync.Mutex
@@ -93,10 +100,12 @@ type BfFrontier struct {
 	onQueueEnd map[string][]chan struct{}
 }
 
-func NewBfFrontier(qp QueueProvider, bloomStorage BloomStorage) *BfFrontier {
+func NewBfFrontier(qp QueueProvider, bloomStorage BloomStorage, conf BfFrontierConfig) *BfFrontier {
 	pq := queues.NewPriorityQueue[string]()
 
 	f := &BfFrontier{
+		conf: conf,
+
 		activeQueues: 0,
 
 		queueProvider: qp,
@@ -106,11 +115,10 @@ func NewBfFrontier(qp QueueProvider, bloomStorage BloomStorage) *BfFrontier {
 
 		bloom: newBloom(bloomStorage),
 
-		maxActiveQueues: 256,
-		responseTime:    make(map[string]time.Duration),
-		nextQueue:       pq,
-		inactiveQueues:  queues.NewQueue[string](),
-		onQueueEnd:      make(map[string][]chan struct{}),
+		responseTime:   make(map[string]time.Duration),
+		nextQueue:      pq,
+		inactiveQueues: queues.NewQueue[string](),
+		onQueueEnd:     make(map[string][]chan struct{}),
 	}
 
 	go func() {
@@ -397,13 +405,13 @@ func (f *BfFrontier) canAddNewQueue() bool {
 	f.aqMu.Lock()
 	defer f.aqMu.Unlock()
 
-	return f.activeQueues < uint32(f.maxActiveQueues)
+	return f.activeQueues < uint32(f.conf.MaxActiveQueues)
 }
 
 func (f *BfFrontier) incActiveCountIfCan() bool {
 	f.aqMu.Lock()
 	defer f.aqMu.Unlock()
-	if f.activeQueues < uint32(f.maxActiveQueues) {
+	if f.activeQueues < uint32(f.conf.MaxActiveQueues) {
 		f.activeQueues += 1
 		return true
 	} else {
@@ -416,7 +424,7 @@ func (f *BfFrontier) getNextRequestTime(host string) time.Time {
 
 	f.rtMu.Lock()
 	if responseTime, ok := f.responseTime[host]; ok {
-		after = responseTime * 10
+		after = responseTime * time.Duration(f.conf.PolitenessMultiplier)
 	}
 	f.rtMu.Unlock()
 
@@ -455,7 +463,7 @@ func (f *BfFrontier) addNewDefaultQueue(queueID string) (*FrontierQueue, error) 
 
 func (f *BfFrontier) addNewQueue(host string, q queues.Queue[Url]) *FrontierQueue {
 	active := f.incActiveCountIfCan()
-	queue := NewFrontierQueue(q, active, 20)
+	queue := NewFrontierQueue(q, active, uint64(f.conf.DefaultSessionBudget))
 
 	f.qmMu.Lock()
 	f.queueMap[host] = queue

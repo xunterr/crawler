@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +16,7 @@ import (
 	"github.com/linxGnu/grocksdb"
 	"github.com/paulbellamy/ratecounter"
 	boom "github.com/tylertreat/BoomFilters"
+	"github.com/xunterr/crawler/internal/dht"
 	"github.com/xunterr/crawler/internal/fetcher"
 	"github.com/xunterr/crawler/internal/frontier"
 	p2p "github.com/xunterr/crawler/internal/net"
@@ -27,22 +27,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
-
-var (
-	addr          string = "127.0.0.1:6969"
-	bootstrapNode string = ""
-	indexer       string = "localhost:8080"
-	seed          string = ""
-	distributed   bool   = false
-)
-
-func init() {
-	flag.StringVar(&addr, "addr", addr, "defines node address")
-	flag.StringVar(&bootstrapNode, "node", "", "node to bootstrap with")
-	flag.StringVar(&seed, "u", "", "seed list path")
-	flag.StringVar(&indexer, "i", "", "indexer address")
-	flag.BoolVar(&distributed, "d", distributed, "distributed vs local deployment")
-}
 
 func initLogger(level zapcore.Level) *zap.Logger {
 	conf := zap.NewProductionEncoderConfig()
@@ -76,11 +60,15 @@ func readSeed(path string) ([]*url.URL, error) {
 func main() {
 	var wg sync.WaitGroup
 	wg.Add(1)
-	flag.Parse()
 
 	defaultLogger := initLogger(zapcore.InfoLevel)
 	defer defaultLogger.Sync()
 	logger := defaultLogger.Sugar()
+
+	conf, err := ReadConf()
+	if err != nil {
+		logger.Fatalln(err)
+	}
 
 	go func() {
 		logger.Fatalln(http.ListenAndServe(":8081", nil))
@@ -88,13 +76,13 @@ func main() {
 
 	var frontier frontier.Frontier
 
-	if distributed {
-		frontier = makeDistributedFrontier(logger)
+	if conf.Distributed.Addr != "" {
+		frontier = makeDistributedFrontier(logger, conf.Distributed)
 	} else {
 		frontier = makeFrontier()
 	}
 
-	urls, err := readSeed(seed)
+	urls, err := readSeed(conf.Frontier.Seed)
 	if err != nil {
 		logger.Errorf("Can't parse URL: %s", err.Error())
 	}
@@ -106,7 +94,8 @@ func main() {
 		}
 	}
 
-	conn, err := grpc.NewClient(indexer, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	println(conf.Fetcher.Indexer)
+	conn, err := grpc.NewClient(conf.Fetcher.Indexer, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		logger.Panicf(err.Error())
 	}
@@ -120,37 +109,64 @@ func main() {
 	wg.Wait()
 }
 
-func makeDistributedFrontier(logger *zap.SugaredLogger) frontier.Frontier {
+func makeDistributedFrontier(logger *zap.SugaredLogger, conf DistributedConf) frontier.Frontier {
 	peer := p2p.NewPeer(logger.Desugar())
 
-	go peer.Listen(context.Background(), addr)
+	go peer.Listen(context.Background(), conf.Addr)
 
 	bfFrontier := makeFrontier()
 
 	dispatcherConf := frontier.DistributedFrontierConf{
-		Addr:              addr,
-		BatchPeriodMs:     40_000,
-		CheckKeysPeriodMs: 30_000,
+		Addr:              conf.Addr,
+		BatchPeriodMs:     conf.BatchPeriodMs,     //40_000
+		CheckKeysPeriodMs: conf.CheckKeysPeriodMs, //30_000
 	}
 
-	distributedFrontier, err := frontier.NewDistributed(logger.Desugar(), peer, bfFrontier.(*frontier.BfFrontier), dispatcherConf)
+	dht, err := makeDHT(logger.Desugar(), peer, conf.Addr, conf.Dht)
+	if err != nil {
+		logger.Fatalln(err)
+		return nil
+	}
+
+	distributedFrontier, err := frontier.NewDistributed(logger.Desugar(), peer, bfFrontier.(*frontier.BfFrontier), dht, dispatcherConf)
 	if err != nil {
 		logger.Fatalln("Failed to init dispatcher: %s", err.Error())
 		return nil
 	}
 
-	fmt.Printf("Node to bootstrap from: %s\n", bootstrapNode)
-	if bootstrapNode != "" {
-		err := distributedFrontier.Bootstrap(bootstrapNode)
-		if err != nil {
-			logger.Infof("Failed to bootstrap from node %s: %s", bootstrapNode, err.Error())
-		}
-	}
+	bootstrap(logger, conf.Addr, distributedFrontier)
 
 	return distributedFrontier
 }
 
-func makeFrontier() frontier.Frontier {
+func makeDHT(logger *zap.Logger, peer *p2p.Peer, addr string, conf DhtConf) (*dht.DHT, error) {
+	dhtConf := dht.DhtConfig{
+		Addr:               addr,
+		SuccListLength:     conf.SuccListLength,     //2
+		StabilizeInterval:  conf.StabilizeInterval,  //10_000
+		FixFingersInterval: conf.FixFingersInterval, //15_000
+		VnodeNum:           conf.VnodeNum,           //32
+	}
+
+	table, err := dht.NewDHT(logger, peer, dhtConf)
+	if err != nil {
+		return nil, err
+	}
+
+	return table, nil
+}
+
+func bootstrap(logger *zap.SugaredLogger, addr string, distributedFrontier *frontier.DistributedFrontier) {
+	fmt.Printf("Node to bootstrap from: %s\n", addr)
+	if addr != "" {
+		err := distributedFrontier.Bootstrap(addr)
+		if err != nil {
+			logger.Infof("Failed to bootstrap from node %s: %s", addr, err.Error())
+		}
+	}
+}
+
+func makeFrontier(conf FrontierConf) frontier.Frontier {
 	qp := frontier.InMemoryQueueProvider{}
 
 	db, err := openRocksDB("data/bloom/")
@@ -160,7 +176,11 @@ func makeFrontier() frontier.Frontier {
 
 	storage := rocksdb.NewRocksdbStorage[*boom.ScalableBloomFilter](db, encode, decode)
 	//storage := inmem.NewInMemoryStorage[*boom.ScalableBloomFilter]()
-	return frontier.NewBfFrontier(qp, storage)
+	return frontier.NewBfFrontier(qp, storage, frontier.BfFrontierConfig{
+		MaxActiveQueues:      conf.MaxActiveQueues,
+		PolitenessMultiplier: conf.Politeness,
+		DefaultSessionBudget: conf.DefaultSessionBudget,
+	})
 }
 
 func encode(bloom *boom.ScalableBloomFilter) ([]byte, error) {

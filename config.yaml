@@ -1,0 +1,19 @@
+distributed:
+  addr: ""
+  bootstrap_node: ""
+  batch_period: 15000
+  vnode_num: 16
+  succlist_length: 2
+  stabilize_interval: 15000
+  fixfingers_interval: 10000
+
+frontier:
+  max_active: 16
+  politeness: 10 
+  session_budget: 20
+  seed: seed.txt
+
+fetcher:
+  indexer: localhost:8080
+  timeout: 5000
+

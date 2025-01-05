@@ -44,24 +44,11 @@ type DistributedFrontier struct {
 	batchMu sync.Mutex
 }
 
-func NewDistributed(logger *zap.Logger, peer *p2p.Peer, frontier *BfFrontier, conf DistributedFrontierConf) (*DistributedFrontier, error) {
-	dhtConf := dht.DhtConfig{
-		Addr:               conf.Addr,
-		SuccListLength:     2,
-		StabilizeInterval:  10_000,
-		FixFingersInterval: 15_000,
-		VnodeNum:           32,
-	}
-
-	table, err := dht.NewDHT(logger, peer, dhtConf)
-	if err != nil {
-		return nil, err
-	}
-
+func NewDistributed(logger *zap.Logger, peer *p2p.Peer, frontier *BfFrontier, dht *dht.DHT, conf DistributedFrontierConf) (*DistributedFrontier, error) {
 	d := &DistributedFrontier{
 		logger:   logger.Sugar(),
 		peer:     peer,
-		dht:      table,
+		dht:      dht,
 		frontier: frontier,
 		batches:  make(map[string][]string),
 
