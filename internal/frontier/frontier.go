@@ -124,6 +124,8 @@ func NewBfFrontier(qp QueueProvider, bloomStorage BloomStorage) *BfFrontier {
 }
 
 func (f *BfFrontier) displayDebug() {
+	f.aqMu.Lock()
+	defer f.aqMu.Unlock()
 	fmt.Printf("Active queues: %d\n", f.activeQueues)
 	fmt.Printf("Actual active queues: %d\n", f.calculateActiveQueues())
 	fmt.Printf("Ready queues: %d\n", f.nextQueue.Length())
@@ -152,7 +154,6 @@ func (f *BfFrontier) Get() (*url.URL, time.Time, error) {
 
 		hit, err := f.bloom.checkBloom(url.Hostname(), []byte(url.String()))
 		if err != nil {
-			println(err.Error())
 			return nil, time.Time{}, err
 		}
 
@@ -197,10 +198,6 @@ func (f *BfFrontier) dequeueFrom(queueId string) (Url, bool) {
 		f.swapQueue(queueId)
 		return Url{}, false
 	}
-
-	//if !queue.isActive {
-	//	f.swapQueue(queueId)
-	//}
 
 	return u, true
 }
@@ -326,12 +323,13 @@ func (f *BfFrontier) setQueueLock(queueID string, locked bool) bool {
 }
 
 func (f *BfFrontier) wakeInactiveQueue() {
-	if !f.canAddNewQueue() {
+	if !f.incActiveCountIfCan() {
 		return
 	}
 
 	id, queue, ok := f.findAvailableInactiveQueue(f.inactiveQueues.Len())
 	if !ok {
+		f.decreaseActiveCount()
 		return
 	}
 
@@ -342,7 +340,6 @@ func (f *BfFrontier) wakeInactiveQueue() {
 	f.qmMu.Unlock()
 
 	f.setNextQueue(id, time.Now().UTC())
-	f.increaseActiveCount()
 }
 
 func (f *BfFrontier) increaseActiveCount() uint32 {
@@ -403,12 +400,23 @@ func (f *BfFrontier) canAddNewQueue() bool {
 	return f.activeQueues < uint32(f.maxActiveQueues)
 }
 
+func (f *BfFrontier) incActiveCountIfCan() bool {
+	f.aqMu.Lock()
+	defer f.aqMu.Unlock()
+	if f.activeQueues < uint32(f.maxActiveQueues) {
+		f.activeQueues += 1
+		return true
+	} else {
+		return false
+	}
+}
+
 func (f *BfFrontier) getNextRequestTime(host string) time.Time {
 	after := time.Duration(1 * time.Second)
 
 	f.rtMu.Lock()
 	if responseTime, ok := f.responseTime[host]; ok {
-		after = responseTime * 4
+		after = responseTime * 10
 	}
 	f.rtMu.Unlock()
 
@@ -446,7 +454,7 @@ func (f *BfFrontier) addNewDefaultQueue(queueID string) (*FrontierQueue, error) 
 }
 
 func (f *BfFrontier) addNewQueue(host string, q queues.Queue[Url]) *FrontierQueue {
-	active := f.canAddNewQueue()
+	active := f.incActiveCountIfCan()
 	queue := NewFrontierQueue(q, active, 20)
 
 	f.qmMu.Lock()
@@ -454,7 +462,6 @@ func (f *BfFrontier) addNewQueue(host string, q queues.Queue[Url]) *FrontierQueu
 	f.qmMu.Unlock()
 
 	if active {
-		f.increaseActiveCount()
 		f.setNextQueue(host, time.Now().UTC())
 	} else {
 		f.enqueueInactiveId(host)

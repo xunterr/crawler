@@ -7,6 +7,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
+	_ "net/http/pprof"
 	"net/url"
 	"os"
 	"sync"
@@ -79,6 +81,10 @@ func main() {
 	defaultLogger := initLogger(zapcore.InfoLevel)
 	defer defaultLogger.Sync()
 	logger := defaultLogger.Sugar()
+
+	go func() {
+		logger.Fatalln(http.ListenAndServe(":8081", nil))
+	}()
 
 	var frontier frontier.Frontier
 
