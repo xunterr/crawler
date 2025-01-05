@@ -38,12 +38,46 @@ var (
 	PING               string = "dht.ping"
 )
 
-type DhtConfig struct {
-	Addr               string
-	SuccListLength     int
-	StabilizeInterval  int
-	FixFingersInterval int
-	VnodeNum           int
+type dhtOpts struct {
+	succListLength     int
+	stabilizeInterval  int
+	fixFingersInterval int
+	vnodeNum           int
+}
+
+type DhtOption func(*dhtOpts)
+
+func defaultOpts() dhtOpts {
+	return dhtOpts{
+		succListLength:     2,
+		stabilizeInterval:  10_000,
+		fixFingersInterval: 15_000,
+		vnodeNum:           16,
+	}
+}
+
+func WithSuccListLength(length int) DhtOption {
+	return func(do *dhtOpts) {
+		do.succListLength = length
+	}
+}
+
+func WithStabilizeInterval(interval int) DhtOption {
+	return func(do *dhtOpts) {
+		do.stabilizeInterval = interval
+	}
+}
+
+func WithFixFingersIntervaal(interval int) DhtOption {
+	return func(do *dhtOpts) {
+		do.fixFingersInterval = interval
+	}
+}
+
+func WithVnodeNum(num int) DhtOption {
+	return func(do *dhtOpts) {
+		do.vnodeNum = num
+	}
 }
 
 type DHT struct {
@@ -55,8 +89,14 @@ type DHT struct {
 	vnMu   sync.Mutex
 }
 
-func NewDHT(logger *zap.Logger, peer *p2p.Peer, conf DhtConfig) (*DHT, error) {
-	addr, err := net.ResolveTCPAddr("tcp", conf.Addr)
+func NewDHT(logger *zap.Logger, peer *p2p.Peer, opts ...DhtOption) (*DHT, error) {
+	do := defaultOpts()
+
+	for _, fn := range opts {
+		fn(&do)
+	}
+
+	addr, err := net.ResolveTCPAddr("tcp", peer.GetAddr())
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +108,7 @@ func NewDHT(logger *zap.Logger, peer *p2p.Peer, conf DhtConfig) (*DHT, error) {
 	}
 
 	d.registerHandlers()
-	d.initVnodes(conf, addr)
+	d.initVnodes(do, addr)
 
 	return d, nil
 }
@@ -80,10 +120,10 @@ func (d *DHT) registerHandlers() {
 	d.peer.AddRequestHandler(PING, d.pingHandler)
 }
 
-func (d *DHT) initVnodes(dhtConf DhtConfig, dhtAddr net.Addr) {
+func (d *DHT) initVnodes(opts dhtOpts, dhtAddr net.Addr) {
 	var prevNode *Node
-	for i := 0; i < dhtConf.VnodeNum; i++ {
-		addr := fmt.Sprintf("%s:%d", dhtConf.Addr, i)
+	for i := 0; i < opts.vnodeNum; i++ {
+		addr := fmt.Sprintf("%s:%d", dhtAddr.String(), i)
 		nodeId := d.MakeKey([]byte(addr))
 		node := &Node{
 			Id:   nodeId,
@@ -91,9 +131,9 @@ func (d *DHT) initVnodes(dhtConf DhtConfig, dhtAddr net.Addr) {
 		}
 
 		vnodeConf := vnodeConf{
-			SuccListLength:     dhtConf.SuccListLength,
-			StabilizeInterval:  dhtConf.StabilizeInterval,
-			FixFingersInterval: dhtConf.FixFingersInterval,
+			SuccListLength:     opts.succListLength,
+			StabilizeInterval:  opts.stabilizeInterval,
+			FixFingersInterval: opts.fixFingersInterval,
 		}
 
 		vnode := newVnode(d.logger.Desugar(), node, func(addr string) *p2p.RequestWriter {

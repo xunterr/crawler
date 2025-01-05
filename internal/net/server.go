@@ -17,6 +17,8 @@ type Peer struct {
 	logger *zap.SugaredLogger
 	quit   chan struct{}
 
+	addr string
+
 	connPool map[string]*yamux.Session
 	mu       sync.Mutex
 
@@ -26,11 +28,12 @@ type Peer struct {
 	streamHandlers  map[string]StreamHandlerFunc
 }
 
-func NewPeer(logger *zap.Logger) *Peer {
+func NewPeer(logger *zap.Logger, addr string) *Peer {
 	return &Peer{
 		quit:     make(chan struct{}),
 		logger:   logger.Sugar(),
 		connPool: make(map[string]*yamux.Session),
+		addr:     addr,
 
 		requestHandlers: make(map[string]RequestHandlerFunc),
 		streamHandlers:  make(map[string]StreamHandlerFunc),
@@ -198,6 +201,10 @@ func (sw *StreamWriter) OpenStream(scope string) (net.Conn, error) {
 	return c, nil
 }
 
+func (p *Peer) GetAddr() string {
+	return p.addr
+}
+
 func (p *Peer) Dial(addr string) (net.Conn, error) {
 	p.mu.Lock()
 	session, ok := p.connPool[addr]
@@ -232,13 +239,13 @@ func (p *Peer) Dial(addr string) (net.Conn, error) {
 	return stream, nil
 }
 
-func (p *Peer) Listen(ctx context.Context, addr string) error {
+func (p *Peer) Listen(ctx context.Context) error {
 	var lc net.ListenConfig
-	l, err := lc.Listen(ctx, "tcp", addr)
+	l, err := lc.Listen(ctx, "tcp", p.addr)
 	if err != nil {
 		return err
 	}
-	p.logger.Infof("Listening on %s", addr)
+	p.logger.Infof("Listening on %s", p.addr)
 
 	go func() {
 		<-ctx.Done()

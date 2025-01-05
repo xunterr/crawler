@@ -25,10 +25,23 @@ const (
 	LOCK_NOTIFY = "dispatcher.lockNotify"
 )
 
-type DistributedFrontierConf struct {
-	BatchPeriodMs     int
-	CheckKeysPeriodMs int
-	Addr              string
+type distributedOptions struct {
+	batchPeriodMs     int
+	checkKeysPeriodMs int
+}
+
+type DistributedOption func(*distributedOptions)
+
+func WithBatchPeriod(ms int) DistributedOption {
+	return func(do *distributedOptions) {
+		do.batchPeriodMs = ms
+	}
+}
+
+func WithCheckKeysPeriod(ms int) DistributedOption {
+	return func(do *distributedOptions) {
+		do.checkKeysPeriodMs = ms
+	}
 }
 
 type DistributedFrontier struct {
@@ -36,7 +49,7 @@ type DistributedFrontier struct {
 
 	peer *p2p.Peer
 	dht  *dht.DHT
-	conf DistributedFrontierConf
+	opts distributedOptions
 
 	frontier *BfFrontier
 
@@ -44,7 +57,16 @@ type DistributedFrontier struct {
 	batchMu sync.Mutex
 }
 
-func NewDistributed(logger *zap.Logger, peer *p2p.Peer, frontier *BfFrontier, dht *dht.DHT, conf DistributedFrontierConf) (*DistributedFrontier, error) {
+func NewDistributed(logger *zap.Logger, peer *p2p.Peer, frontier *BfFrontier, dht *dht.DHT, opts ...DistributedOption) (*DistributedFrontier, error) {
+	defaultOpts := &distributedOptions{
+		batchPeriodMs:     40_000,
+		checkKeysPeriodMs: 30_000,
+	}
+
+	for _, fn := range opts {
+		fn(defaultOpts)
+	}
+
 	d := &DistributedFrontier{
 		logger:   logger.Sugar(),
 		peer:     peer,
@@ -52,7 +74,7 @@ func NewDistributed(logger *zap.Logger, peer *p2p.Peer, frontier *BfFrontier, dh
 		frontier: frontier,
 		batches:  make(map[string][]string),
 
-		conf: conf,
+		opts: *defaultOpts,
 	}
 
 	peer.AddRequestHandler(URL_FOUND, d.urlFoundHandler)
@@ -81,7 +103,7 @@ func (d *DistributedFrontier) Put(u *url.URL) error {
 		return err
 	}
 
-	if succ.Addr.String() == d.conf.Addr {
+	if succ.Addr.String() == d.peer.GetAddr() {
 		return d.frontier.Put(u)
 	} else {
 		return d.createBatch(succ.Addr.String(), u)
@@ -97,7 +119,7 @@ func (d *DistributedFrontier) checkKeys() {
 			continue
 		}
 
-		if succ.Addr.String() != d.conf.Addr && !q.IsEmpty() {
+		if succ.Addr.String() != d.peer.GetAddr() && !q.IsEmpty() {
 			if keys, ok := repartitioned[succ.Addr.String()]; ok {
 				keys = append(keys, k)
 				repartitioned[succ.Addr.String()] = keys
@@ -256,7 +278,7 @@ func (d *DistributedFrontier) createBatch(node string, u *url.URL) error {
 
 func (d *DistributedFrontier) dispatcherLoop(ctx context.Context) {
 	go func() {
-		t := time.Tick(time.Duration(d.conf.BatchPeriodMs) * time.Millisecond)
+		t := time.Tick(time.Duration(d.opts.batchPeriodMs) * time.Millisecond)
 		for {
 			select {
 			case <-t:
@@ -268,7 +290,7 @@ func (d *DistributedFrontier) dispatcherLoop(ctx context.Context) {
 	}()
 
 	go func() {
-		t := time.Tick(time.Duration(d.conf.CheckKeysPeriodMs) * time.Millisecond)
+		t := time.Tick(time.Duration(d.opts.checkKeysPeriodMs) * time.Millisecond)
 		for {
 			select {
 			case <-t:

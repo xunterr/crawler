@@ -75,13 +75,13 @@ func main() {
 	}()
 
 	var frontier frontier.Frontier
-
 	if conf.Distributed.Addr != "" {
-		frontier = makeDistributedFrontier(logger, conf.Distributed)
+		frontier = makeDistributedFrontier(logger, makeFrontier(conf.Frontier), conf.Distributed)
 	} else {
-		frontier = makeFrontier()
+		frontier = makeFrontier(conf.Frontier)
 	}
 
+	println(conf.Frontier.Seed)
 	urls, err := readSeed(conf.Frontier.Seed)
 	if err != nil {
 		logger.Errorf("Can't parse URL: %s", err.Error())
@@ -94,7 +94,6 @@ func main() {
 		}
 	}
 
-	println(conf.Fetcher.Indexer)
 	conn, err := grpc.NewClient(conf.Fetcher.Indexer, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		logger.Panicf(err.Error())
@@ -109,46 +108,55 @@ func main() {
 	wg.Wait()
 }
 
-func makeDistributedFrontier(logger *zap.SugaredLogger, conf DistributedConf) frontier.Frontier {
-	peer := p2p.NewPeer(logger.Desugar())
+func makeDistributedFrontier(logger *zap.SugaredLogger, bfFrontier *frontier.BfFrontier, conf DistributedConf) frontier.Frontier {
+	peer := p2p.NewPeer(logger.Desugar(), conf.Addr)
 
-	go peer.Listen(context.Background(), conf.Addr)
+	go peer.Listen(context.Background())
 
-	bfFrontier := makeFrontier()
-
-	dispatcherConf := frontier.DistributedFrontierConf{
-		Addr:              conf.Addr,
-		BatchPeriodMs:     conf.BatchPeriodMs,     //40_000
-		CheckKeysPeriodMs: conf.CheckKeysPeriodMs, //30_000
-	}
-
-	dht, err := makeDHT(logger.Desugar(), peer, conf.Addr, conf.Dht)
+	dht, err := makeDHT(logger.Desugar(), peer, conf.Dht)
 	if err != nil {
 		logger.Fatalln(err)
 		return nil
 	}
 
-	distributedFrontier, err := frontier.NewDistributed(logger.Desugar(), peer, bfFrontier.(*frontier.BfFrontier), dht, dispatcherConf)
+	var opts []frontier.DistributedOption
+	if conf.CheckKeysPeriodMs > 0 {
+		opts = append(opts, frontier.WithCheckKeysPeriod(conf.CheckKeysPeriodMs))
+	}
+	if conf.BatchPeriodMs > 0 {
+		opts = append(opts, frontier.WithBatchPeriod(conf.BatchPeriodMs))
+	}
+
+	distributedFrontier, err := frontier.NewDistributed(logger.Desugar(), peer, bfFrontier, dht, opts...)
 	if err != nil {
 		logger.Fatalln("Failed to init dispatcher: %s", err.Error())
 		return nil
 	}
 
-	bootstrap(logger, conf.Addr, distributedFrontier)
+	bootstrap(logger, conf.Bootstrap, distributedFrontier)
 
 	return distributedFrontier
 }
 
-func makeDHT(logger *zap.Logger, peer *p2p.Peer, addr string, conf DhtConf) (*dht.DHT, error) {
-	dhtConf := dht.DhtConfig{
-		Addr:               addr,
-		SuccListLength:     conf.SuccListLength,     //2
-		StabilizeInterval:  conf.StabilizeInterval,  //10_000
-		FixFingersInterval: conf.FixFingersInterval, //15_000
-		VnodeNum:           conf.VnodeNum,           //32
+func makeDHT(logger *zap.Logger, peer *p2p.Peer, conf DhtConf) (*dht.DHT, error) {
+	options := []struct {
+		condition bool
+		option    dht.DhtOption
+	}{
+		{conf.FixFingersInterval > 0, dht.WithFixFingersIntervaal(conf.FixFingersInterval)},
+		{conf.StabilizeInterval > 0, dht.WithStabilizeInterval(conf.StabilizeInterval)},
+		{conf.SuccListLength > 0, dht.WithSuccListLength(conf.SuccListLength)},
+		{conf.VnodeNum > 0, dht.WithVnodeNum(conf.VnodeNum)},
 	}
 
-	table, err := dht.NewDHT(logger, peer, dhtConf)
+	var opts []dht.DhtOption
+	for _, opt := range options {
+		if opt.condition {
+			opts = append(opts, opt.option)
+		}
+	}
+
+	table, err := dht.NewDHT(logger, peer, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +166,7 @@ func makeDHT(logger *zap.Logger, peer *p2p.Peer, addr string, conf DhtConf) (*dh
 
 func bootstrap(logger *zap.SugaredLogger, addr string, distributedFrontier *frontier.DistributedFrontier) {
 	fmt.Printf("Node to bootstrap from: %s\n", addr)
-	if addr != "" {
+	if len(addr) > 0 {
 		err := distributedFrontier.Bootstrap(addr)
 		if err != nil {
 			logger.Infof("Failed to bootstrap from node %s: %s", addr, err.Error())
@@ -166,7 +174,7 @@ func bootstrap(logger *zap.SugaredLogger, addr string, distributedFrontier *fron
 	}
 }
 
-func makeFrontier(conf FrontierConf) frontier.Frontier {
+func makeFrontier(conf FrontierConf) *frontier.BfFrontier {
 	qp := frontier.InMemoryQueueProvider{}
 
 	db, err := openRocksDB("data/bloom/")
@@ -176,11 +184,19 @@ func makeFrontier(conf FrontierConf) frontier.Frontier {
 
 	storage := rocksdb.NewRocksdbStorage[*boom.ScalableBloomFilter](db, encode, decode)
 	//storage := inmem.NewInMemoryStorage[*boom.ScalableBloomFilter]()
-	return frontier.NewBfFrontier(qp, storage, frontier.BfFrontierConfig{
-		MaxActiveQueues:      conf.MaxActiveQueues,
-		PolitenessMultiplier: conf.Politeness,
-		DefaultSessionBudget: conf.DefaultSessionBudget,
-	})
+
+	opts := []frontier.BfFrontierOption{}
+	if conf.DefaultSessionBudget > 0 {
+		opts = append(opts, frontier.WithSessionBudget(conf.DefaultSessionBudget))
+	}
+	if conf.Politeness > 0 {
+		opts = append(opts, frontier.WithPolitenessMultiplier(conf.Politeness))
+	}
+	if conf.MaxActiveQueues > 0 {
+		opts = append(opts, frontier.WithMaxActiveQueues(conf.MaxActiveQueues))
+	}
+
+	return frontier.NewBfFrontier(qp, storage, opts...)
 }
 
 func encode(bloom *boom.ScalableBloomFilter) ([]byte, error) {
