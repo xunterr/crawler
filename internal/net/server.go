@@ -223,6 +223,8 @@ func (p *Peer) Dial(addr string) (net.Conn, error) {
 		p.mu.Lock()
 		p.connPool[addr] = session
 		p.mu.Unlock()
+
+		p.handleSession(session)
 	}
 
 	stream, err := session.Open()
@@ -270,6 +272,10 @@ func (p *Peer) Listen(ctx context.Context) error {
 				p.logger.Errorf("Failed to open a session: %s", err.Error())
 				return
 			}
+
+			p.mu.Lock()
+			p.connPool[c.RemoteAddr().String()] = session
+			p.mu.Unlock()
 
 			p.handleSession(session)
 			session.Close()
