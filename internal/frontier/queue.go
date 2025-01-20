@@ -1,7 +1,7 @@
 package frontier
 
 import (
-	"github.com/xunterr/crawler/pkg/queues"
+	"github.com/xunterr/crawler/internal/storage"
 )
 
 type Url struct {
@@ -10,13 +10,13 @@ type Url struct {
 }
 
 type FrontierQueue struct {
-	queue         queues.Queue[Url]
+	queue         storage.Queue[Url]
 	isActive      bool
 	isLocked      bool
 	sessionBudget uint64
 }
 
-func NewFrontierQueue(from queues.Queue[Url], isActive bool, sessionBudget uint64) *FrontierQueue {
+func NewFrontierQueue(from storage.Queue[Url], isActive bool, sessionBudget uint64) *FrontierQueue {
 	return &FrontierQueue{
 		queue:         from,
 		isActive:      isActive,
@@ -34,10 +34,9 @@ func (q *FrontierQueue) Dequeue() (Url, bool) {
 		return Url{}, false
 	}
 
-	url := Url{}
-	ok := q.queue.Pop(&url)
+	url, err := q.queue.Pop()
 
-	if !ok {
+	if err != nil {
 		q.isActive = false
 		return Url{}, false
 	}

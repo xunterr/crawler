@@ -20,6 +20,7 @@ import (
 	"github.com/xunterr/crawler/internal/fetcher"
 	"github.com/xunterr/crawler/internal/frontier"
 	p2p "github.com/xunterr/crawler/internal/net"
+	"github.com/xunterr/crawler/internal/storage"
 	"github.com/xunterr/crawler/internal/storage/rocksdb"
 	"github.com/xunterr/crawler/proto"
 	"go.uber.org/zap"
@@ -27,6 +28,61 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+type persistentQp struct {
+	db              *grocksdb.DB
+	queueStorage    *rocksdb.RocksdbStorage[frontier.Url]
+	metadataStorage *rocksdb.RocksdbStorage[string]
+}
+
+func newPersistentQp(path string) (*persistentQp, error) {
+	db, cfs, err := createDefaultDBWithCF(path, []string{"metadata", "data"})
+	if err != nil {
+		return nil, err
+	}
+
+	metadataCF := cfs[0]
+	dataCF := cfs[1]
+
+	metadataStorage := rocksdb.NewRocksdbStorage[string](db, rocksdb.WithCF(metadataCF))
+	queueStorage := rocksdb.NewRocksdbStorage[frontier.Url](db, rocksdb.WithCF(dataCF))
+	return &persistentQp{
+		db:              db,
+		queueStorage:    queueStorage,
+		metadataStorage: metadataStorage,
+	}, nil
+}
+
+func createDefaultDBWithCF(path string, cfs []string) (*grocksdb.DB, grocksdb.ColumnFamilyHandles, error) {
+	cfs = append(cfs, "default")
+	var opts []*grocksdb.Options
+	for _ = range cfs {
+		opts = append(opts, grocksdb.NewDefaultOptions())
+	}
+	return grocksdb.OpenDbColumnFamilies(getDbOpts(), path, cfs, opts)
+}
+
+func (qp *persistentQp) Get(id string) (storage.Queue[frontier.Url], error) {
+	err := qp.metadataStorage.Put(id, "")
+	if err != nil {
+		return nil, err
+	}
+	return rocksdb.NewRocksdbQueue(qp.queueStorage, []byte(id)), nil
+}
+
+func (qp *persistentQp) GetAll() (map[string]storage.Queue[frontier.Url], error) {
+	queueMap := make(map[string]storage.Queue[frontier.Url])
+	metadata, err := qp.metadataStorage.GetAll()
+	if err != nil {
+		return nil, err
+	}
+
+	for k, _ := range metadata {
+		queue := rocksdb.NewRocksdbQueue(qp.queueStorage, []byte(k))
+		queueMap[k] = queue
+	}
+	return queueMap, nil
+}
 
 func initLogger(level zapcore.Level) *zap.Logger {
 	conf := zap.NewProductionEncoderConfig()
@@ -175,15 +231,22 @@ func bootstrap(logger *zap.SugaredLogger, addr string, distributedFrontier *fron
 }
 
 func makeFrontier(conf FrontierConf) *frontier.BfFrontier {
-	qp := frontier.InMemoryQueueProvider{}
-
-	db, err := openRocksDB("data/bloom/")
+	qp, err := newPersistentQp("data/queues/")
 	if err != nil {
 		panic(err.Error())
 	}
 
-	storage := rocksdb.NewRocksdbStorage[*boom.ScalableBloomFilter](db, encode, decode)
+	bloomDb, err := grocksdb.OpenDb(getDbOpts(), "data/bloom/")
+	if err != nil {
+		panic(err.Error())
+	}
+
+	storage := rocksdb.NewRocksdbStorageWithEncoderDecoder[*boom.ScalableBloomFilter](bloomDb, encode, decode)
 	//storage := inmem.NewInMemoryStorage[*boom.ScalableBloomFilter]()
+	queues, err := qp.GetAll()
+	if err != nil {
+		panic(err)
+	}
 
 	opts := []frontier.BfFrontierOption{}
 	if conf.DefaultSessionBudget > 0 {
@@ -196,7 +259,9 @@ func makeFrontier(conf FrontierConf) *frontier.BfFrontier {
 		opts = append(opts, frontier.WithMaxActiveQueues(conf.MaxActiveQueues))
 	}
 
-	return frontier.NewBfFrontier(qp, storage, opts...)
+	frontier := frontier.NewBfFrontier(qp, storage, opts...)
+	frontier.LoadQueues(queues)
+	return frontier
 }
 
 func encode(bloom *boom.ScalableBloomFilter) ([]byte, error) {
@@ -217,13 +282,18 @@ func decode(data []byte) (*boom.ScalableBloomFilter, error) {
 	return bloom, err
 }
 
-func openRocksDB(path string) (*grocksdb.DB, error) {
+func getDbOpts() *grocksdb.Options {
 	bbto := grocksdb.NewDefaultBlockBasedTableOptions()
 	bbto.SetBlockCache(grocksdb.NewLRUCache(3 << 30))
 	opts := grocksdb.NewDefaultOptions()
 	opts.SetBlockBasedTableFactory(bbto)
 	opts.SetCreateIfMissing(true)
-	return grocksdb.OpenDb(opts, path)
+	opts.SetCreateIfMissingColumnFamilies(true)
+	return opts
+}
+
+func openRocksDB(path string) (*grocksdb.DB, error) {
+	return grocksdb.OpenDb(getDbOpts(), path)
 }
 
 func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fet fetcher.Fetcher) {

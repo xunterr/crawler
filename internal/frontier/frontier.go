@@ -3,13 +3,13 @@ package frontier
 import (
 	"errors"
 	"fmt"
-	"log"
 	"net/url"
 	"sync"
 	"time"
 
 	"github.com/syndtr/goleveldb/leveldb"
-	"github.com/xunterr/crawler/pkg/queues"
+	"github.com/xunterr/crawler/internal/storage"
+	"github.com/xunterr/crawler/internal/storage/inmem"
 )
 
 type Frontier interface {
@@ -19,53 +19,18 @@ type Frontier interface {
 }
 
 type QueueProvider interface {
-	Get(string) (queues.Queue[Url], error)
+	Get(string) (storage.Queue[Url], error)
 }
 
 type InMemoryQueueProvider struct{}
 
-func (qp InMemoryQueueProvider) Get(host string) (queues.Queue[Url], error) {
-	return queues.NewQueue[Url](), nil
+func (qp InMemoryQueueProvider) Get(host string) (storage.Queue[Url], error) {
+	return inmem.NewQueue[Url](), nil
 }
 
 type PersistentQueueProvider struct {
 	base string
 	db   *leveldb.DB
-}
-
-func NewPersistentQueueProvider(dbPath string) (*PersistentQueueProvider, error) {
-	db, err := leveldb.OpenFile(dbPath, nil)
-
-	return &PersistentQueueProvider{
-		base: dbPath,
-		db:   db,
-	}, err
-}
-
-func (qp *PersistentQueueProvider) Get(id string) (queues.Queue[Url], error) {
-	name := fmt.Sprintf("%s-%s", qp.base, id)
-	err := qp.db.Put([]byte(id), []byte(name), nil)
-	if err != nil {
-		return nil, err
-	}
-	log.Printf("Opening %s", name)
-	return queues.NewPersistentQueue[Url](name)
-}
-
-func (qp *PersistentQueueProvider) GetAll() (map[string]queues.Queue[Url], error) {
-
-	queueMap := make(map[string]queues.Queue[Url])
-	iter := qp.db.NewIterator(nil, nil)
-
-	for iter.Next() {
-		log.Printf("Opening %s", iter.Value())
-		queue, err := queues.NewPersistentQueue[Url](string(iter.Value()))
-		if err != nil {
-			return queueMap, err
-		}
-		queueMap[string(iter.Key())] = queue
-	}
-	return queueMap, nil
 }
 
 type bfFrontierOpts struct {
@@ -115,13 +80,13 @@ type BfFrontier struct {
 
 	bloom *bloom
 
-	nextQueue *queues.PriorityQueue[string]
+	nextQueue *inmem.PriorityQueue[string]
 	block     *sync.Cond
 
 	responseTime map[string]time.Duration
 	rtMu         sync.Mutex
 
-	inactiveQueues queues.Queue[string]
+	inactiveQueues storage.Queue[string]
 	iqMu           sync.Mutex
 
 	qeMu       sync.Mutex
@@ -129,7 +94,7 @@ type BfFrontier struct {
 }
 
 func NewBfFrontier(qp QueueProvider, bloomStorage BloomStorage, opts ...BfFrontierOption) *BfFrontier {
-	pq := queues.NewPriorityQueue[string]()
+	pq := inmem.NewPriorityQueue[string]()
 
 	defaultOpts := defaultOpts()
 
@@ -151,7 +116,7 @@ func NewBfFrontier(qp QueueProvider, bloomStorage BloomStorage, opts ...BfFronti
 
 		responseTime:   make(map[string]time.Duration),
 		nextQueue:      pq,
-		inactiveQueues: queues.NewQueue[string](),
+		inactiveQueues: inmem.NewQueue[string](),
 		onQueueEnd:     make(map[string][]chan struct{}),
 	}
 
@@ -430,9 +395,12 @@ func (f *BfFrontier) enqueueInactiveId(queueId string) {
 
 func (f *BfFrontier) dequeueInactiveId() (id string, ok bool) {
 	f.iqMu.Lock()
-	ok = f.inactiveQueues.Pop(&id)
+	id, err := f.inactiveQueues.Pop()
+	if err != nil {
+		return "", false
+	}
 	f.iqMu.Unlock()
-	return
+	return id, true
 }
 
 func (f *BfFrontier) canAddNewQueue() bool {
@@ -495,7 +463,7 @@ func (f *BfFrontier) addNewDefaultQueue(queueID string) (*FrontierQueue, error) 
 	return f.addNewQueue(queueID, q), nil
 }
 
-func (f *BfFrontier) addNewQueue(host string, q queues.Queue[Url]) *FrontierQueue {
+func (f *BfFrontier) addNewQueue(host string, q storage.Queue[Url]) *FrontierQueue {
 	active := f.incActiveCountIfCan()
 	queue := NewFrontierQueue(q, active, uint64(f.opts.defaultSessionBudget))
 
@@ -511,7 +479,7 @@ func (f *BfFrontier) addNewQueue(host string, q queues.Queue[Url]) *FrontierQueu
 
 	return queue
 }
-func (f *BfFrontier) LoadQueues(queues map[string]queues.Queue[Url]) {
+func (f *BfFrontier) LoadQueues(queues map[string]storage.Queue[Url]) {
 	for k, queue := range queues {
 		f.addNewQueue(k, queue)
 	}

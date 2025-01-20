@@ -1,4 +1,4 @@
-package queues
+package inmem
 
 import "container/heap"
 

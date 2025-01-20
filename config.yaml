@@ -1,5 +1,5 @@
 distributed:
-  addr: "localhost:6969"
+  addr: ""
   bootstrap_node: ""
   batch_period: 15000
   vnode_num: 16
