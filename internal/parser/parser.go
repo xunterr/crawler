@@ -1,54 +1,28 @@
-package fetcher
+package parser
 
 import (
-	"bufio"
-	"io"
-	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/opesun/goquery"
 )
 
-func get(link *url.URL) ([]byte, time.Duration, error) {
-	start := time.Now()
-
-	client := http.Client{
-		Timeout: 5 * time.Second,
-	}
-
-	resp, err := client.Get(link.String())
-	if err != nil {
-		return nil, time.Duration(-1), err
-	}
-	ttr := time.Since(start)
-	defer resp.Body.Close()
-
-	reader := bufio.NewReader(resp.Body)
-	data, err := io.ReadAll(reader)
-	if err != nil && err != io.EOF {
-		return nil, time.Duration(-1), err
-	}
-	return data, ttr, nil
-}
-
 type PageInfo struct {
-	title string
-	body  []byte
-	links []*url.URL
+	Body  []byte
+	Title string
+	Links []*url.URL
 }
 
-func parsePage(input []byte) (*PageInfo, error) {
+func ParsePage(input []byte) (*PageInfo, error) {
 	x, err := goquery.ParseString(string(input))
 	if err != nil {
 		return nil, err
 	}
 
 	return &PageInfo{
-		body:  []byte(x.Text()),
-		title: parseTitle(x),
-		links: parseLinks(x),
+		Body:  []byte(x.Text()),
+		Title: parseTitle(x),
+		Links: parseLinks(x),
 	}, nil
 }
 

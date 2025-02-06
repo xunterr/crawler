@@ -1,7 +1,7 @@
 package fetcher
 
 import (
-	"context"
+	"net/http"
 	"net/url"
 	"time"
 
@@ -9,14 +9,13 @@ import (
 	"go.uber.org/zap"
 )
 
-type Response struct {
-	Url   *url.URL
-	TTR   time.Duration
-	Links []*url.URL
+type FetchDetails struct {
+	Response *http.Response
+	TTR      time.Duration
 }
 
 type Fetcher interface {
-	Fetch(*url.URL) (Response, error)
+	Fetch(*url.URL) (FetchDetails, error)
 }
 
 type DefaultFetcher struct {
@@ -28,55 +27,20 @@ func NewDefaultFetcher(logger *zap.Logger, client pb.IndexerClient) *DefaultFetc
 	return &DefaultFetcher{client: client, logger: logger.Sugar()}
 }
 
-func (df *DefaultFetcher) Fetch(page *url.URL) (Response, error) {
-	data, ttr, err := get(page)
+func (df *DefaultFetcher) Fetch(url *url.URL) (FetchDetails, error) {
+	start := time.Now()
+
+	client := http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	resp, err := client.Get(url.String())
 	if err != nil {
-		return Response{Url: page, Links: nil, TTR: ttr}, err
+		return FetchDetails{}, err
 	}
-
-	pageInfo, err := parsePage(data)
-	if err != nil {
-		return Response{Url: page, Links: nil, TTR: ttr}, err
-	}
-
-	var linksNormalized []*url.URL
-	for _, e := range pageInfo.links {
-		linksNormalized = append(linksNormalized, normalize(page, e))
-	}
-
-	go func() {
-		isOk, err := df.sendIndexRequest(page.String(), pageInfo.title, pageInfo.body)
-		if err != nil {
-			df.logger.Errorw("Indexer returned error on sendIndexRequest",
-				"error", err.Error())
-			return
-		}
-
-		if !isOk {
-			df.logger.Warnln("Indexer returned negative result on sendIndexRequest")
-			return
-		}
-	}()
-
-	return Response{
-		Url:   page,
-		Links: linksNormalized,
-		TTR:   ttr,
+	ttr := time.Since(start)
+	return FetchDetails{
+		Response: resp,
+		TTR:      ttr,
 	}, nil
-}
-
-func (df *DefaultFetcher) sendIndexRequest(url string, title string, body []byte) (bool, error) {
-	res, err := df.client.Index(context.Background(), &pb.IndexRequest{
-		Document: &pb.Document{
-			Title: title,
-			Body:  body,
-			Url:   url,
-		},
-	})
-
-	if err != nil {
-		return false, err
-	}
-
-	return res.IsOk, nil
 }

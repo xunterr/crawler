@@ -98,6 +98,7 @@ func RequestRecord(req *http.Request) (*warc.Record, error) {
 func ResponseRecord(res *http.Response) (*warc.Record, error) {
 	bytes, err := httputil.DumpResponse(res, true)
 	if err != nil {
+		println("here")
 		return nil, err
 	}
 	record, err := newRecord(Response, bytes)
