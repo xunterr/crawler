@@ -253,6 +253,14 @@ func (f *BfFrontier) MarkProcessed(url *url.URL, ttr time.Duration) error {
 	queue, ok := f.queueMap[url.Hostname()]
 	f.qmMu.Unlock()
 
+	if ttr.Milliseconds() < 0 {
+		ttr = time.Duration(0)
+	}
+
+	normalizedTTR := ttr.Milliseconds() / 5000
+	sessionBudget := (1 - normalizedTTR) * int64(f.opts.defaultSessionBudget)
+	queue.sessionBudget = uint64(sessionBudget)
+
 	if !ok {
 		return errors.New("No such queue")
 	}
@@ -340,7 +348,7 @@ func (f *BfFrontier) wakeInactiveQueue() {
 		return
 	}
 
-	queue.Reset(20)
+	queue.Reset(uint64(f.opts.defaultSessionBudget))
 
 	f.qmMu.Lock()
 	f.queueMap[id] = queue

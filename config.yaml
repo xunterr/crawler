@@ -8,9 +8,9 @@ distributed:
   fixfingers_interval: 10000
 
 frontier:
-  max_active: 16
-  politeness: 10 
-  session_budget: 20
+  max_active: 512
+  politeness: 1 
+  session_budget: 10
   seed: seed.txt
 
 fetcher:

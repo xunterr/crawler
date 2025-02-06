@@ -23,16 +23,16 @@ type DhtConf struct {
 
 type DistributedConf struct {
 	Addr              string  `koanf:"addr"`
-	Bootstrap         string  `koanf:"bootstrapNode"`
-	BatchPeriodMs     int     `koanf:"batchPeriod"`
-	CheckKeysPeriodMs int     `koanf:"checkKeysPeriod"`
+	Bootstrap         string  `koanf:"bootstrap_node"`
+	BatchPeriodMs     int     `koanf:"batch_period"`
+	CheckKeysPeriodMs int     `koanf:"checkkeys_period"`
 	Dht               DhtConf `koanf:"dht"`
 }
 
 type FrontierConf struct {
-	MaxActiveQueues      int    `koanf:"maxActive"`
+	MaxActiveQueues      int    `koanf:"max_active"`
 	Politeness           int    `koanf:"politeness"`
-	DefaultSessionBudget int    `koanf:"sessionBudget"`
+	DefaultSessionBudget int    `koanf:"session_budget"`
 	Seed                 string `koanf:"seed"`
 }
 
@@ -53,7 +53,6 @@ func ReadConf() (*Config, error) {
 	flags := ParseFlags()
 
 	yamlPath, _ := flags.GetString("conf")
-	println(yamlPath)
 	k.Load(file.Provider(yamlPath), yaml.Parser()) //read yaml first
 
 	k.Load(env.Provider("", ".", func(s string) string { //overwrite with .env if exists
