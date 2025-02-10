@@ -1,11 +1,8 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
-	"io"
-	"net/http"
 	"net/url"
 	"strconv"
 	"sync"
@@ -40,7 +37,7 @@ type Worker struct {
 }
 
 func (w *Worker) runN(ctx context.Context, wg *sync.WaitGroup, n int) {
-	for range n {
+	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func() {
 			w.run(ctx)
@@ -82,35 +79,22 @@ func (w *Worker) process(ctx context.Context, res resource) result {
 	details, err := w.fetcher.Fetch(res.u)
 	if err != nil {
 		return result{
-			err:   err,
-			url:   res.u,
-			ttr:   time.Duration(0),
-			links: []*url.URL{},
+			err: err,
+			url: res.u,
 		}
 	}
 
-	bytes, err := readPage(details.Response)
+	pageInfo, err := parser.ParsePage(details.Body)
 	if err != nil {
 		return result{
-			err:   err,
-			url:   res.u,
-			ttr:   details.TTR,
-			links: []*url.URL{},
-		}
-	}
-
-	pageInfo, err := parser.ParsePage(bytes)
-	if err != nil {
-		return result{
-			err:   err,
-			url:   res.u,
-			ttr:   details.TTR,
-			links: []*url.URL{},
+			err: err,
+			url: res.u,
+			ttr: details.TTR,
 		}
 	}
 
 	w.mu.Lock()
-	err = writeWarc(w.warcWriter, res.u, bytes, details.TTR)
+	err = writeWarc(w.warcWriter, res.u, details)
 	w.mu.Unlock()
 
 	return result{
@@ -121,24 +105,14 @@ func (w *Worker) process(ctx context.Context, res resource) result {
 	}
 }
 
-func readPage(resp *http.Response) ([]byte, error) {
-	reader := bufio.NewReader(resp.Body)
-	data, err := io.ReadAll(reader)
-	if err != nil && err != io.EOF {
-		return nil, err
-	}
-	return data, nil
-
-}
-
-func writeWarc(writer *warc.WarcWriter, url *url.URL, data []byte, ttr time.Duration) error {
-	respRecord, err := warc.ResourceRecord(data, url.String(), "application/http")
+func writeWarc(writer *warc.WarcWriter, url *url.URL, details *fetcher.FetchDetails) error {
+	respRecord, err := warc.ResourceRecord(details.Body, url.String(), "application/http")
 	if err != nil {
 		return err
 	}
 
 	metadata := make(map[string]string)
-	metadata["fetchTimeMs"] = strconv.Itoa(int(ttr.Milliseconds()))
+	metadata["fetchTimeMs"] = strconv.Itoa(int(details.TTR.Milliseconds()))
 	metadataRecord, err := warc.MetadataRecord(metadata, url.String())
 	if err != nil {
 		return err

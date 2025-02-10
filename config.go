@@ -37,8 +37,7 @@ type FrontierConf struct {
 }
 
 type FetcherConf struct {
-	Indexer   string `koanf:"indexer"`
-	TimeoutMs int    `koanf:"timeout"`
+	TimeoutMs int `koanf:"timeout"`
 }
 
 type Config struct {

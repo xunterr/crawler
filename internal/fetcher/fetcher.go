@@ -1,46 +1,73 @@
 package fetcher
 
 import (
+	"bufio"
+	"io"
 	"net/http"
 	"net/url"
 	"time"
-
-	pb "github.com/xunterr/crawler/proto"
-	"go.uber.org/zap"
 )
 
 type FetchDetails struct {
-	Response *http.Response
-	TTR      time.Duration
+	Body []byte
+	TTR  time.Duration
 }
 
 type Fetcher interface {
-	Fetch(*url.URL) (FetchDetails, error)
+	Fetch(*url.URL) (*FetchDetails, error)
 }
 
 type DefaultFetcher struct {
-	client pb.IndexerClient
-	logger *zap.SugaredLogger
+	timeout time.Duration
+	client  http.Client
 }
 
-func NewDefaultFetcher(logger *zap.Logger, client pb.IndexerClient) *DefaultFetcher {
-	return &DefaultFetcher{client: client, logger: logger.Sugar()}
-}
-
-func (df *DefaultFetcher) Fetch(url *url.URL) (FetchDetails, error) {
-	start := time.Now()
-
-	client := http.Client{
-		Timeout: 5 * time.Second,
+func NewDefaultFetcher(timeout time.Duration) *DefaultFetcher {
+	return &DefaultFetcher{
+		timeout: timeout,
+		client: http.Client{
+			Timeout: timeout,
+		},
 	}
+}
 
-	resp, err := client.Get(url.String())
+func (df *DefaultFetcher) Fetch(url *url.URL) (*FetchDetails, error) {
+	req, err := http.NewRequest("GET", url.String(), nil)
 	if err != nil {
-		return FetchDetails{}, err
+		return nil, err
 	}
+
+	df.setHeaders(req)
+
+	start := time.Now()
+	resp, err := df.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
 	ttr := time.Since(start)
-	return FetchDetails{
-		Response: resp,
-		TTR:      ttr,
+
+	bytes, err := readPage(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return &FetchDetails{
+		Body: bytes,
+		TTR:  ttr,
 	}, nil
+}
+
+func (df *DefaultFetcher) setHeaders(req *http.Request) {
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+}
+
+func readPage(resp *http.Response) ([]byte, error) {
+	reader := bufio.NewReader(resp.Body)
+	data, err := io.ReadAll(reader)
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	return data, nil
 }

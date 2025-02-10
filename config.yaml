@@ -9,11 +9,10 @@ distributed:
 
 frontier:
   max_active: 512
-  politeness: 2
+  politeness: 5
   session_budget: 5
   seed: seed.txt
 
 fetcher:
-  indexer: localhost:8080
-  timeout: 5000
+  timeout: 3000
 

@@ -14,7 +14,8 @@ import (
 
 type Frontier interface {
 	Get() (*url.URL, time.Time, error)
-	MarkProcessed(*url.URL, time.Duration) error
+	MarkSuccessful(*url.URL, time.Duration) error
+	MarkFailed(*url.URL) error
 	Put(*url.URL) error
 }
 
@@ -159,17 +160,27 @@ func (f *BfFrontier) Get() (*url.URL, time.Time, error) {
 			return nil, time.Time{}, err
 		}
 
-		hit, err := f.bloom.checkBloom(url.Hostname(), []byte(url.String()))
+		id := toId(url)
+
+		hit, err := f.bloom.checkBloom(id, []byte(url.String()))
 		if err != nil {
 			return nil, time.Time{}, err
 		}
 
 		if hit {
-			f.setNextQueue(url.Hostname(), f.getNextRequestTime(url.Hostname()))
+			f.setNextQueue(id, f.getNextRequestTime(id))
 		} else {
 			return url, accessAt, nil
 		}
 	}
+}
+
+func toId(url *url.URL) string {
+	if len(url.String()) == 0 {
+		return ""
+	}
+
+	return url.Hostname()
 }
 
 func (f *BfFrontier) getNextUrl() (*url.URL, time.Time, error) {
@@ -216,7 +227,8 @@ func (f *BfFrontier) swapQueue(queueId string) {
 }
 
 func (f *BfFrontier) Put(url *url.URL) error {
-	ok, err := f.bloom.checkBloom(url.Hostname(), []byte(url.String()))
+	id := toId(url)
+	ok, err := f.bloom.checkBloom(id, []byte(url.String()))
 	if err != nil {
 		return err
 	}
@@ -226,12 +238,12 @@ func (f *BfFrontier) Put(url *url.URL) error {
 	}
 
 	f.qmMu.Lock()
-	queue, ok := f.queueMap[url.Hostname()]
+	queue, ok := f.queueMap[id]
 	f.qmMu.Unlock()
 
 	if !ok {
 		var err error
-		queue, err = f.addNewDefaultQueue(url.Hostname())
+		queue, err = f.addNewDefaultQueue(id)
 		if err != nil {
 			return err
 		}
@@ -244,35 +256,47 @@ func (f *BfFrontier) Put(url *url.URL) error {
 	return nil
 }
 
-func (f *BfFrontier) MarkProcessed(url *url.URL, ttr time.Duration) error {
+func (f *BfFrontier) MarkSuccessful(url *url.URL, ttr time.Duration) error {
 	f.rtMu.Lock()
-	f.responseTime[url.Hostname()] = ttr
+	f.responseTime[toId(url)] = ttr
 	f.rtMu.Unlock()
 
+	id := toId(url)
 	f.qmMu.Lock()
-	queue, ok := f.queueMap[url.Hostname()]
+	queue, ok := f.queueMap[id]
 	f.qmMu.Unlock()
 
 	if !ok {
 		return errors.New("No such queue")
 	}
 
-	if ttr.Milliseconds() < 0 {
-		ttr = time.Duration(0)
-	}
+	queue.sessionBudget = f.calculateSessionBudget(id)
 
-	normalizedTTR := ttr.Milliseconds() / 5000
-	sessionBudget := (1 - normalizedTTR) * int64(f.opts.defaultSessionBudget)
-	queue.sessionBudget = uint64(sessionBudget)
+	return f.markProcessed(url)
+}
+
+func (f *BfFrontier) MarkFailed(url *url.URL) error {
+	return f.markProcessed(url)
+}
+
+func (f *BfFrontier) markProcessed(url *url.URL) error {
+	id := toId(url)
+	f.qmMu.Lock()
+	queue, ok := f.queueMap[id]
+	f.qmMu.Unlock()
+
+	if !ok {
+		return errors.New("No such queue")
+	}
 
 	if queue.IsEmpty() {
-		go f.notifyAllOnEnd(url.Hostname())
+		go f.notifyAllOnEnd(id)
 	}
 
-	after := f.getNextRequestTime(url.Hostname())
-	f.setNextQueue(url.Hostname(), after)
+	after := f.getNextRequestTime(id)
+	f.setNextQueue(id, after)
 
-	return f.bloom.addBloom(url.Hostname(), []byte(url.String()))
+	return f.bloom.addBloom(id, []byte(url.String()))
 }
 
 func (f *BfFrontier) notifyAllOnEnd(queueID string) {
@@ -348,13 +372,31 @@ func (f *BfFrontier) wakeInactiveQueue() {
 		return
 	}
 
-	queue.Reset(uint64(f.opts.defaultSessionBudget))
+	queue.Reset(f.calculateSessionBudget(id))
 
 	f.qmMu.Lock()
 	f.queueMap[id] = queue
 	f.qmMu.Unlock()
 
 	f.setNextQueue(id, time.Now().UTC())
+}
+
+func (f *BfFrontier) calculateSessionBudget(queueId string) uint64 {
+	f.rtMu.Lock()
+	rt, ok := f.responseTime[queueId]
+	f.rtMu.Unlock()
+
+	if !ok {
+		return uint64(f.opts.defaultSessionBudget)
+	}
+
+	if rt.Milliseconds() < 0 {
+		rt = time.Duration(0)
+	}
+
+	normalizedTTR := rt.Milliseconds() / 5000
+	sessionBudget := (1 - normalizedTTR) * int64(f.opts.defaultSessionBudget)
+	return uint64(sessionBudget)
 }
 
 func (f *BfFrontier) increaseActiveCount() uint32 {
@@ -429,11 +471,11 @@ func (f *BfFrontier) incActiveCountIfCan() bool {
 	}
 }
 
-func (f *BfFrontier) getNextRequestTime(host string) time.Time {
+func (f *BfFrontier) getNextRequestTime(id string) time.Time {
 	after := time.Duration(1 * time.Second)
 
 	f.rtMu.Lock()
-	if responseTime, ok := f.responseTime[host]; ok {
+	if responseTime, ok := f.responseTime[id]; ok {
 		after = responseTime * time.Duration(f.opts.politenessMultiplier)
 	}
 	f.rtMu.Unlock()
@@ -471,18 +513,18 @@ func (f *BfFrontier) addNewDefaultQueue(queueID string) (*FrontierQueue, error) 
 	return f.addNewQueue(queueID, q), nil
 }
 
-func (f *BfFrontier) addNewQueue(host string, q storage.Queue[Url]) *FrontierQueue {
+func (f *BfFrontier) addNewQueue(id string, q storage.Queue[Url]) *FrontierQueue {
 	active := f.incActiveCountIfCan()
 	queue := NewFrontierQueue(q, active, uint64(f.opts.defaultSessionBudget))
 
 	f.qmMu.Lock()
-	f.queueMap[host] = queue
+	f.queueMap[id] = queue
 	f.qmMu.Unlock()
 
 	if active {
-		f.setNextQueue(host, time.Now().UTC())
+		f.setNextQueue(id, time.Now().UTC())
 	} else {
-		f.enqueueInactiveId(host)
+		f.enqueueInactiveId(id)
 	}
 
 	return queue

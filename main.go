@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/linxGnu/grocksdb"
 	"github.com/prometheus/client_golang/prometheus"
@@ -24,17 +25,19 @@ import (
 	"github.com/xunterr/crawler/internal/storage"
 	"github.com/xunterr/crawler/internal/storage/rocksdb"
 	"github.com/xunterr/crawler/internal/warc"
-	"github.com/xunterr/crawler/proto"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 var (
 	total = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "crawler_processed_total",
 		Help: "The total number of processed pages.",
+	})
+
+	totalGood = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "crawler_processed_total_good",
+		Help: "The total number of 200 OK processed pages.",
 	})
 )
 
@@ -135,6 +138,9 @@ func main() {
 		logger.Fatalln(err)
 	}
 
+	t := time.Duration(conf.Fetcher.TimeoutMs) * time.Millisecond
+	println(t.String())
+
 	http.Handle("/metrics", promhttp.Handler())
 	go func() {
 		logger.Fatalln(http.ListenAndServe(":8080", nil))
@@ -159,15 +165,7 @@ func main() {
 		}
 	}
 
-	conn, err := grpc.NewClient(conf.Fetcher.Indexer, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		logger.Panicf(err.Error())
-	}
-	defer conn.Close()
-
-	client := proto.NewIndexerClient(conn)
-
-	fetcher := fetcher.NewDefaultFetcher(defaultLogger, client)
+	fetcher := fetcher.NewDefaultFetcher(time.Duration(conf.Fetcher.TimeoutMs) * time.Millisecond)
 	loop(logger, frontier, fetcher)
 
 	wg.Wait()
@@ -314,18 +312,20 @@ func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fet fetcher.Fet
 	go func() {
 		for r := range processed {
 			total.Inc()
-
 			if r.err != nil {
 				logger.Errorf("Error processing url: %s", r.err)
+				frontier.MarkFailed(r.url)
+				continue
 			}
 
+			totalGood.Inc()
 			for _, u := range r.links {
 				err := frontier.Put(u)
 				if err != nil {
 					logger.Errorln(err.Error())
 				}
 			}
-			frontier.MarkProcessed(r.url, r.ttr)
+			frontier.MarkSuccessful(r.url, r.ttr)
 		}
 	}()
 

@@ -93,12 +93,16 @@ func (d *DistributedFrontier) Get() (*url.URL, time.Time, error) {
 	return d.frontier.Get()
 }
 
-func (d *DistributedFrontier) MarkProcessed(u *url.URL, ttr time.Duration) error {
-	return d.frontier.MarkProcessed(u, ttr)
+func (d *DistributedFrontier) MarkSuccessful(u *url.URL, ttr time.Duration) error {
+	return d.frontier.MarkSuccessful(u, ttr)
+}
+
+func (d *DistributedFrontier) MarkFailed(u *url.URL) error {
+	return d.frontier.MarkFailed(u)
 }
 
 func (d *DistributedFrontier) Put(u *url.URL) error {
-	succ, err := d.dht.FindSuccessor(d.dht.MakeKey([]byte(u.Hostname())))
+	succ, err := d.dht.FindSuccessor(d.dht.MakeKey([]byte(toId(u))))
 	if err != nil {
 		return err
 	}
