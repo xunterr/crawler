@@ -6,12 +6,10 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	_ "net/http/pprof"
 	"net/url"
 	"os"
-	"strconv"
 	"sync"
 	"time"
 
@@ -22,7 +20,6 @@ import (
 	"github.com/xunterr/crawler/internal/fetcher"
 	"github.com/xunterr/crawler/internal/frontier"
 	p2p "github.com/xunterr/crawler/internal/net"
-	"github.com/xunterr/crawler/internal/parser"
 	"github.com/xunterr/crawler/internal/storage"
 	"github.com/xunterr/crawler/internal/storage/rocksdb"
 	"github.com/xunterr/crawler/internal/warc"
@@ -31,8 +28,6 @@ import (
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-
-	warcparser "github.com/slyrz/warc"
 )
 
 type persistentQp struct {
@@ -143,7 +138,6 @@ func main() {
 		frontier = makeFrontier(conf.Frontier)
 	}
 
-	println(conf.Frontier.Seed)
 	urls, err := readSeed(conf.Frontier.Seed)
 	if err != nil {
 		logger.Errorf("Can't parse URL: %s", err.Error())
@@ -255,14 +249,12 @@ func makeFrontier(conf FrontierConf) *frontier.BfFrontier {
 	}
 
 	opts := []frontier.BfFrontierOption{}
-	println(conf.DefaultSessionBudget)
 	if conf.DefaultSessionBudget > 0 {
 		opts = append(opts, frontier.WithSessionBudget(conf.DefaultSessionBudget))
 	}
 	if conf.Politeness > 0 {
 		opts = append(opts, frontier.WithPolitenessMultiplier(conf.Politeness))
 	}
-	println(conf.MaxActiveQueues)
 	if conf.MaxActiveQueues > 0 {
 		opts = append(opts, frontier.WithMaxActiveQueues(conf.MaxActiveQueues))
 	}
@@ -325,6 +317,10 @@ func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fet fetcher.Fet
 			counter.Incr(1)
 			total++
 
+			if r.err != nil {
+				logger.Errorf("Error processing url: %s", r.err)
+			}
+
 			for _, u := range r.links {
 				err := frontier.Put(u)
 				if err != nil {
@@ -337,11 +333,13 @@ func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fet fetcher.Fet
 
 	warcWriter := warc.NewWarcWriter("data/warc/")
 
-	var mu sync.Mutex
-	for i := 0; i < 256; i++ {
-		wg.Add(1)
-		go worker(&wg, fet, warcWriter, &mu, urls, processed)
+	worker := &Worker{
+		fetcher:    fet,
+		in:         urls,
+		out:        processed,
+		warcWriter: warcWriter,
 	}
+	worker.runN(context.Background(), &wg, 512)
 
 	for {
 		url, accessAt, err := frontier.Get()
@@ -349,109 +347,9 @@ func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fet fetcher.Fet
 			continue
 		}
 
-		go func(res resource, ch chan resource, wg *sync.WaitGroup) {
-			wg.Add(1)
-			defer wg.Done()
-
-			at := res.at
-			if res.at.Sub(time.Now()) > time.Duration(10*time.Second) {
-				at = time.Now().Add(time.Duration(10 * time.Second))
-			}
-			timer := time.NewTimer(time.Until(at))
-			for {
-				select {
-				case <-timer.C:
-					ch <- res
-					return
-				}
-			}
-		}(resource{u: url, at: accessAt}, urls, &wg)
-	}
-}
-
-type resource struct {
-	u  *url.URL
-	at time.Time
-}
-
-type result struct {
-	url   *url.URL
-	ttr   time.Duration
-	links []*url.URL
-}
-
-func worker(wg *sync.WaitGroup, fetcher fetcher.Fetcher, warcWriter *warc.WarcWriter, mu *sync.Mutex, urls chan resource, processed chan result) {
-	for u := range urls {
-		if time.Until(u.at).Seconds() > 10 {
-			time.Sleep(10 * time.Second)
-		} else {
-			time.Sleep(time.Until(u.at))
-		}
-
-		details, err := fetcher.Fetch(u.u)
-		if err != nil {
-			continue
-		}
-
-		bytes, err := readPage(details.Response)
-		if err != nil {
-			continue
-		}
-
-		mu.Lock()
-		err = writeWarc(warcWriter, u.u, bytes, details.TTR)
-		mu.Unlock()
-		if err != nil {
-			log.Fatalln(err)
-		}
-
-		pageInfo, err := parser.ParsePage(bytes)
-		if err != nil {
-			continue
-		}
-
-		processed <- result{
-			url:   u.u,
-			ttr:   details.TTR,
-			links: pageInfo.Links,
+		urls <- resource{
+			u:  url,
+			at: accessAt,
 		}
 	}
-
-	wg.Done()
-}
-
-func readPage(resp *http.Response) ([]byte, error) {
-	reader := bufio.NewReader(resp.Body)
-	data, err := io.ReadAll(reader)
-	if err != nil && err != io.EOF {
-		return nil, err
-	}
-	return data, nil
-
-}
-
-func writeWarc(writer *warc.WarcWriter, url *url.URL, data []byte, ttr time.Duration) error {
-	respRecord, err := warc.ResourceRecord(data, url.String(), "application/http")
-	if err != nil {
-		return err
-	}
-
-	metadata := make(map[string]string)
-	metadata["fetchTimeMs"] = strconv.Itoa(int(ttr.Milliseconds()))
-	metadataRecord, err := warc.MetadataRecord(metadata, url.String())
-	if err != nil {
-		return err
-	}
-
-	warc.Capture(respRecord, []*warcparser.Record{metadataRecord})
-	err = writer.Write(respRecord)
-	if err != nil {
-		return err
-	}
-
-	err = writer.Write(metadataRecord)
-	if err != nil {
-		return err
-	}
-	return nil
 }

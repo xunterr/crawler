@@ -9,8 +9,8 @@ distributed:
 
 frontier:
   max_active: 512
-  politeness: 1 
-  session_budget: 10
+  politeness: 2
+  session_budget: 5
   seed: seed.txt
 
 fetcher:
