@@ -11,10 +11,11 @@ import (
 	"net/url"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/linxGnu/grocksdb"
-	"github.com/paulbellamy/ratecounter"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	boom "github.com/tylertreat/BoomFilters"
 	"github.com/xunterr/crawler/internal/dht"
 	"github.com/xunterr/crawler/internal/fetcher"
@@ -28,6 +29,13 @@ import (
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+)
+
+var (
+	total = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "crawler_processed_total",
+		Help: "The total number of processed pages.",
+	})
 )
 
 type persistentQp struct {
@@ -127,8 +135,9 @@ func main() {
 		logger.Fatalln(err)
 	}
 
+	http.Handle("/metrics", promhttp.Handler())
 	go func() {
-		logger.Fatalln(http.ListenAndServe(":8081", nil))
+		logger.Fatalln(http.ListenAndServe(":8080", nil))
 	}()
 
 	var frontier frontier.Frontier
@@ -298,24 +307,13 @@ func openRocksDB(path string) (*grocksdb.DB, error) {
 
 func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fet fetcher.Fetcher) {
 	var wg sync.WaitGroup
-	counter := ratecounter.NewRateCounter(1 * time.Second)
-	var total uint32
 
 	urls := make(chan resource, 128)
 	processed := make(chan result, 16)
 
 	go func() {
-		t := time.Tick(5 * time.Second)
-		for range t {
-			logger.Infof("Ops/sec: %d; Total: %d", counter.Rate(), total)
-			logger.Infof("Len of urls buffer: %d, len of processed buffer: %d", len(urls), len(processed))
-		}
-	}()
-
-	go func() {
 		for r := range processed {
-			counter.Incr(1)
-			total++
+			total.Inc()
 
 			if r.err != nil {
 				logger.Errorf("Error processing url: %s", r.err)
