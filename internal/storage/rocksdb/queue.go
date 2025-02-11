@@ -40,6 +40,7 @@ func (r *RocksdbQueue[V]) initQueue() {
 	ro.SetIterateUpperBound(r.getKey(math.MaxUint32))
 	it := r.storage.getIter(ro)
 	defer it.Close()
+	defer ro.Destroy()
 	it.Seek(r.getKey(0))
 
 	var first []byte

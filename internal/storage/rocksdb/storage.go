@@ -18,6 +18,9 @@ type RocksdbStorage[V any] struct {
 	encode   Encoder[V]
 	decode   Decoder[V]
 	cfHandle *grocksdb.ColumnFamilyHandle
+
+	ro *grocksdb.ReadOptions
+	wo *grocksdb.WriteOptions
 }
 
 type rocksdbStorageOptions struct {
@@ -65,6 +68,8 @@ func NewRocksdbStorage[V any](db *grocksdb.DB, opts ...RocksdbStorageOption) *Ro
 		decode:   gobDecode[V],
 		db:       db,
 		cfHandle: defaultOpts.cfHandle,
+		ro:       grocksdb.NewDefaultReadOptions(),
+		wo:       grocksdb.NewDefaultWriteOptions(),
 	}
 }
 
@@ -76,7 +81,7 @@ func NewRocksdbStorageWithEncoderDecoder[V any](db *grocksdb.DB, encoder Encoder
 }
 
 func (s *RocksdbStorage[V]) Get(key string) (V, error) {
-	value, err := s.db.GetCF(grocksdb.NewDefaultReadOptions(), s.cfHandle, []byte(key))
+	value, err := s.db.GetCF(s.ro, s.cfHandle, []byte(key))
 	if err != nil {
 		return *new(V), err
 	}
@@ -91,7 +96,7 @@ func (s *RocksdbStorage[V]) Get(key string) (V, error) {
 
 func (s *RocksdbStorage[V]) GetAll() (map[string]V, error) {
 	all := make(map[string]V)
-	iter := s.getIter(grocksdb.NewDefaultReadOptions())
+	iter := s.getIter(s.ro)
 	defer iter.Close()
 	iter.SeekToFirst()
 	for iter = iter; iter.Valid(); iter.Next() {
@@ -111,12 +116,17 @@ func (s *RocksdbStorage[V]) Put(key string, value V) error {
 	if err != nil {
 		return err
 	}
-	err = s.db.PutCF(grocksdb.NewDefaultWriteOptions(), s.cfHandle, []byte(key), bytes)
+	err = s.db.PutCF(s.wo, s.cfHandle, []byte(key), bytes)
 	return err
 }
 
 func (s *RocksdbStorage[V]) Delete(key string) error {
-	return s.db.DeleteCF(grocksdb.NewDefaultWriteOptions(), s.cfHandle, []byte(key))
+	return s.db.DeleteCF(s.wo, s.cfHandle, []byte(key))
+}
+
+func (s *RocksdbStorage[V]) Close() {
+	s.ro.Destroy()
+	s.wo.Destroy()
 }
 
 func (s *RocksdbStorage[V]) getIter(ro *grocksdb.ReadOptions) *grocksdb.Iterator {
