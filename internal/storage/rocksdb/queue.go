@@ -39,6 +39,7 @@ func (r *RocksdbQueue[V]) initQueue() {
 	ro := grocksdb.NewDefaultReadOptions()
 	ro.SetIterateUpperBound(r.getKey(math.MaxUint32))
 	it := r.storage.getIter(ro)
+	defer it.Close()
 	it.Seek(r.getKey(0))
 
 	var first []byte

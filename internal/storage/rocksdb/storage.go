@@ -92,6 +92,7 @@ func (s *RocksdbStorage[V]) Get(key string) (V, error) {
 func (s *RocksdbStorage[V]) GetAll() (map[string]V, error) {
 	all := make(map[string]V)
 	iter := s.getIter(grocksdb.NewDefaultReadOptions())
+	defer iter.Close()
 	iter.SeekToFirst()
 	for iter = iter; iter.Valid(); iter.Next() {
 		key := iter.Key().Data()
