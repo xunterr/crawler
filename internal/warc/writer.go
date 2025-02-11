@@ -1,6 +1,7 @@
 package warc
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"fmt"
@@ -26,7 +27,7 @@ func NewWarcWriter(path string) *WarcWriter {
 		buff:        bytes.NewBuffer(make([]byte, 0)),
 		path:        path,
 		maxFileSize: 1 * int64(math.Pow(10, 9)),
-		maxBuffSize: int64(math.Pow(10, 6)),
+		maxBuffSize: 100 * int64(math.Pow(10, 6)),
 	}
 
 	ww.initNewBuff()
@@ -53,7 +54,9 @@ func (w *WarcWriter) dumpToFile() error {
 	}
 	defer file.Close()
 
-	_, err = io.Copy(file, w.buff)
+	buf := bufio.NewWriter(file)
+
+	_, err = io.Copy(buf, w.buff)
 	if err != nil {
 		return err
 	}
