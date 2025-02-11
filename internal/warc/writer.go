@@ -15,19 +15,21 @@ import (
 )
 
 type WarcWriter struct {
-	buff        *bytes.Buffer
-	path        string
-	currFile    string
-	maxFileSize int64
-	maxBuffSize int64
+	buff            *bytes.Buffer
+	path            string
+	currFile        string
+	maxFileSize     int64
+	maxBuffSize     int64
+	bytesSinceFlush int64
 }
 
 func NewWarcWriter(path string) *WarcWriter {
 	ww := &WarcWriter{
-		buff:        bytes.NewBuffer(make([]byte, 0)),
-		path:        path,
-		maxFileSize: 1 * int64(math.Pow(10, 9)),
-		maxBuffSize: 100 * int64(math.Pow(10, 6)),
+		buff:            bytes.NewBuffer(make([]byte, 0)),
+		path:            path,
+		maxFileSize:     1 * int64(math.Pow(10, 9)),
+		maxBuffSize:     100 * int64(math.Pow(10, 6)),
+		bytesSinceFlush: 0,
 	}
 
 	ww.initNewBuff()
@@ -56,17 +58,16 @@ func (w *WarcWriter) dumpToFile() error {
 
 	buf := bufio.NewWriter(file)
 
-	_, err = io.Copy(buf, w.buff)
+	n, err := io.Copy(buf, w.buff)
 	if err != nil {
 		return err
 	}
 
-	stats, err := file.Stat()
-	if err != nil {
-		return err
-	}
+	w.bytesSinceFlush += n
+	buf.Flush()
 
-	if stats.Size() >= w.maxFileSize {
+	if w.bytesSinceFlush >= w.maxFileSize {
+		file.Seek(0, 0)
 		if err := w.zip(file); err != nil {
 			return err
 		}
@@ -105,6 +106,7 @@ func (w *WarcWriter) zip(r io.Reader) error {
 
 func (w *WarcWriter) reset() error {
 	w.currFile = ""
+	w.bytesSinceFlush = 0
 	return w.initNewBuff()
 }
 
@@ -122,7 +124,7 @@ func truncate(file *os.File) error {
 }
 
 func (w *WarcWriter) open(path string) (*os.File, error) {
-	return os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
+	return os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
 }
 
 func (w *WarcWriter) newFile() (*os.File, error) {
