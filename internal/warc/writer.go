@@ -25,7 +25,7 @@ func NewWarcWriter(path string) *WarcWriter {
 	ww := &WarcWriter{
 		buff:        bytes.NewBuffer(make([]byte, 0)),
 		path:        path,
-		maxFileSize: 5 * int64(math.Pow(10, 6)),
+		maxFileSize: 1 * int64(math.Pow(10, 9)),
 		maxBuffSize: int64(math.Pow(10, 6)),
 	}
 
@@ -41,33 +41,19 @@ func (w *WarcWriter) Write(record *warc.Record) error {
 	}
 
 	if w.buff.Len() >= int(w.maxBuffSize) {
-		err := w.dumpToFile()
-		if err != nil {
-			return err
-		}
+		return w.dumpToFile()
 	}
 	return nil
 }
 
 func (w *WarcWriter) dumpToFile() error {
-	var file *os.File
-	if w.currFile == "" {
-		var err error
-		file, err = w.newFile()
-		if err != nil {
-			return err
-		}
-		w.currFile = file.Name()
-	} else {
-		var err error
-		file, err = w.open(w.currFile)
-		if err != nil {
-			return err
-		}
+	file, err := w.getFile()
+	if err != nil {
+		return err
 	}
 	defer file.Close()
 
-	err := writeGzip(w.buff, file)
+	_, err = io.Copy(file, w.buff)
 	if err != nil {
 		return err
 	}
@@ -76,14 +62,47 @@ func (w *WarcWriter) dumpToFile() error {
 	if err != nil {
 		return err
 	}
+
 	if stats.Size() >= w.maxFileSize {
-		w.currFile = ""
-		err = w.initNewBuff()
-		if err != nil {
+		if err := w.zip(file); err != nil {
+			return err
+		}
+		if err := os.Remove(w.currFile); err != nil {
+			return err
+		}
+		if err := w.reset(); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (w *WarcWriter) getFile() (*os.File, error) {
+	var file *os.File
+	if w.currFile == "" {
+		var err error
+		file, err = w.newFile()
+		if err != nil {
+			return nil, err
+		}
+		w.currFile = file.Name()
+		return file, err
+	} else {
+		return w.open(w.currFile)
+	}
+}
+
+func (w *WarcWriter) zip(r io.Reader) error {
+	zipped, err := w.open(fmt.Sprintf("%s.gz", w.currFile))
+	if err != nil {
+		return err
+	}
+	return writeGzip(r, zipped)
+}
+
+func (w *WarcWriter) reset() error {
+	w.currFile = ""
+	return w.initNewBuff()
 }
 
 func truncate(file *os.File) error {
@@ -100,11 +119,11 @@ func truncate(file *os.File) error {
 }
 
 func (w *WarcWriter) open(path string) (*os.File, error) {
-	return os.OpenFile(path, os.O_RDWR, 0644)
+	return os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
 }
 
 func (w *WarcWriter) newFile() (*os.File, error) {
-	name := fmt.Sprintf("%s.warc.gz", time.Now().Format("2006-01-02T15:04:05Z"))
+	name := fmt.Sprintf("%s.warc", time.Now().Format("2006-01-02T15:04:05Z"))
 	file, err := os.Create(filepath.Join(w.path, name))
 	if err != nil {
 		return nil, err
