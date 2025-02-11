@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jimsmart/grobotstxt"
 	warcparser "github.com/slyrz/warc"
 	"github.com/xunterr/crawler/internal/fetcher"
 	"github.com/xunterr/crawler/internal/parser"
@@ -36,6 +37,8 @@ type Worker struct {
 	mu         sync.Mutex
 }
 
+var ErrCrawlForbidden error = errors.New("Crawl forbidden")
+
 func (w *Worker) runN(ctx context.Context, wg *sync.WaitGroup, n int) {
 	for i := 0; i < n; i++ {
 		wg.Add(1)
@@ -50,6 +53,19 @@ func (w *Worker) run(ctx context.Context) {
 	for {
 		select {
 		case r := <-w.in:
+			can, err := w.canCrawl(r.u)
+			if err == nil && !can {
+				err = ErrCrawlForbidden
+			}
+
+			if err != nil {
+				w.out <- result{
+					err: err,
+					url: r.u,
+				}
+				break
+			}
+
 			w.out <- w.waitAndProcess(ctx, r)
 		case <-ctx.Done():
 			return
@@ -103,6 +119,21 @@ func (w *Worker) process(ctx context.Context, res resource) result {
 		ttr:   details.TTR,
 		links: pageInfo.Links,
 	}
+}
+
+func (w *Worker) canCrawl(res *url.URL) (bool, error) {
+	robotsUrl := *res
+	robotsUrl.Path = "/robots.txt"
+	robotsUrl.RawQuery = ""
+	robotsUrl.Fragment = ""
+
+	details, err := w.fetcher.Fetch(&robotsUrl)
+	if err != nil {
+		return false, err
+	}
+
+	ok := grobotstxt.AgentAllowed(string(details.Body), "GoBot/1.0", res.String())
+	return ok, nil
 }
 
 func writeWarc(writer *warc.WarcWriter, url *url.URL, details *fetcher.FetchDetails) error {

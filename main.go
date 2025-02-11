@@ -313,7 +313,9 @@ func loop(logger *zap.SugaredLogger, frontier frontier.Frontier, fet fetcher.Fet
 		for r := range processed {
 			total.Inc()
 			if r.err != nil {
-				logger.Errorf("Error processing url: %s", r.err)
+				if r.err != ErrCrawlForbidden {
+					logger.Errorf("Error processing url: %s", r.err)
+				}
 				frontier.MarkFailed(r.url)
 				continue
 			}

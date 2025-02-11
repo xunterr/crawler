@@ -1,5 +1,3 @@
-nextQueue-*
-prefixQueue-*
 crawler
 venv/*
 metrics.*
@@ -7,3 +5,4 @@ metrics.*
 log*
 *.png
 data/*
+prometheus/
