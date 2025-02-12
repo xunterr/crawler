@@ -2,10 +2,14 @@ package fetcher
 
 import (
 	"bufio"
+	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/rs/dnscache"
 )
 
 type FetchDetails struct {
@@ -23,12 +27,48 @@ type DefaultFetcher struct {
 }
 
 func NewDefaultFetcher(timeout time.Duration) *DefaultFetcher {
+	resolver := &dnscache.Resolver{}
+
+	go refreshDNSCacheLoop(resolver)
+
 	return &DefaultFetcher{
 		timeout: timeout,
 		client: http.Client{
 			Timeout: timeout,
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					return dialContext(ctx, resolver, network, addr)
+				},
+			},
 		},
 	}
+}
+
+func refreshDNSCacheLoop(resolver *dnscache.Resolver) {
+	t := time.NewTicker(5 * time.Minute)
+	defer t.Stop()
+	for range t.C {
+		resolver.Refresh(true)
+	}
+}
+
+func dialContext(ctx context.Context, res *dnscache.Resolver, network string, addr string) (conn net.Conn, err error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := res.LookupHost(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	for _, ip := range ips {
+		var dialer net.Dialer
+		conn, err = dialer.DialContext(ctx, network, net.JoinHostPort(ip, port))
+		if err == nil {
+			break
+		}
+	}
+	return
 }
 
 func (df *DefaultFetcher) Fetch(url *url.URL) (*FetchDetails, error) {
