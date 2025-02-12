@@ -251,7 +251,7 @@ func (f *BfFrontier) Put(url *url.URL) error {
 
 	queue.Enqueue(Url{
 		Url:    url.String(),
-		Weight: 1,
+		Weight: uint32(f.calculateUrlWeight(id)),
 	})
 	return nil
 }
@@ -260,17 +260,6 @@ func (f *BfFrontier) MarkSuccessful(url *url.URL, ttr time.Duration) error {
 	f.rtMu.Lock()
 	f.responseTime[toId(url)] = ttr
 	f.rtMu.Unlock()
-
-	id := toId(url)
-	f.qmMu.Lock()
-	queue, ok := f.queueMap[id]
-	f.qmMu.Unlock()
-
-	if !ok {
-		return errors.New("No such queue")
-	}
-
-	queue.sessionBudget = f.calculateSessionBudget(id)
 
 	return f.markProcessed(url)
 }
@@ -382,21 +371,42 @@ func (f *BfFrontier) wakeInactiveQueue() {
 }
 
 func (f *BfFrontier) calculateSessionBudget(queueId string) uint64 {
+	normalizedRt, ok := f.getNormalizedRt(queueId)
+	if !ok {
+		return uint64(f.opts.defaultSessionBudget)
+	}
+	sessionBudget := (1 - normalizedRt) * float32(f.opts.defaultSessionBudget)
+	return uint64(sessionBudget)
+}
+
+func (f *BfFrontier) calculateUrlWeight(queueId string) uint64 {
+	normalizedRt, ok := f.getNormalizedRt(queueId)
+	if !ok {
+		return 1
+	}
+
+	urlWeight := normalizedRt * float32(f.opts.defaultSessionBudget)
+	if urlWeight < 1 {
+		return 1
+	}
+
+	return uint64(urlWeight)
+}
+
+func (f *BfFrontier) getNormalizedRt(queueId string) (float32, bool) {
 	f.rtMu.Lock()
 	rt, ok := f.responseTime[queueId]
 	f.rtMu.Unlock()
 
 	if !ok {
-		return uint64(f.opts.defaultSessionBudget)
+		return 0, false
 	}
 
 	if rt.Milliseconds() < 0 {
 		rt = time.Duration(0)
 	}
 
-	normalizedTTR := rt.Milliseconds() / 5000
-	sessionBudget := (1 - normalizedTTR) * int64(f.opts.defaultSessionBudget)
-	return uint64(sessionBudget)
+	return float32(rt.Milliseconds()) / 5000, true
 }
 
 func (f *BfFrontier) increaseActiveCount() uint32 {
