@@ -23,6 +23,7 @@ import (
 	"github.com/xunterr/crawler/internal/frontier"
 	p2p "github.com/xunterr/crawler/internal/net"
 	"github.com/xunterr/crawler/internal/storage"
+	"github.com/xunterr/crawler/internal/storage/inmem"
 	"github.com/xunterr/crawler/internal/storage/rocksdb"
 	"github.com/xunterr/crawler/internal/warc"
 	"go.uber.org/zap"
@@ -248,7 +249,8 @@ func makeFrontier(conf FrontierConf) *frontier.BfFrontier {
 		panic(err.Error())
 	}
 
-	storage := rocksdb.NewRocksdbStorageWithEncoderDecoder[*boom.ScalableBloomFilter](bloomDb, encode, decode)
+	persistentStorage := rocksdb.NewRocksdbStorageWithEncoderDecoder[*boom.ScalableBloomFilter](bloomDb, encode, decode)
+	storage := inmem.NewSlidingStorage(persistentStorage, 1024)
 	//storage := inmem.NewInMemoryStorage[*boom.ScalableBloomFilter]()
 	queues, err := qp.GetAll()
 	if err != nil {

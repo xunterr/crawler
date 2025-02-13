@@ -3,6 +3,7 @@ package frontier
 import (
 	"bufio"
 	"bytes"
+	"sync"
 
 	boom "github.com/tylertreat/BoomFilters"
 	"github.com/xunterr/crawler/internal/storage"
@@ -11,6 +12,7 @@ import (
 type BloomStorage storage.Storage[*boom.ScalableBloomFilter]
 
 type bloom struct {
+	mu      sync.Mutex
 	storage BloomStorage
 }
 
@@ -21,6 +23,8 @@ func newBloom(storage BloomStorage) *bloom {
 }
 
 func (b *bloom) addBloom(key string, entry []byte) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	bloom, err := b.storage.Get(key)
 	if err != nil {
 		if err != storage.NoSuchKeyError {
@@ -33,7 +37,9 @@ func (b *bloom) addBloom(key string, entry []byte) error {
 }
 
 func (b *bloom) checkBloom(key string, entry []byte) (bool, error) {
+	b.mu.Lock()
 	bloom, err := b.storage.Get(key)
+	b.mu.Unlock()
 	if err != nil {
 		if err != storage.NoSuchKeyError {
 			return false, err
@@ -52,7 +58,9 @@ func (b *bloom) setBloom(key string, bloom []byte) error { //this library doesn'
 		return err
 	}
 
+	b.mu.Lock()
 	err = b.storage.Put(key, bl)
+	b.mu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -60,7 +68,9 @@ func (b *bloom) setBloom(key string, bloom []byte) error { //this library doesn'
 }
 
 func (b *bloom) getBloom(key string) ([]byte, error) {
+	b.mu.Lock()
 	bloom, err := b.storage.Get(key)
+	b.mu.Unlock()
 	if err != nil {
 		if err != storage.NoSuchKeyError {
 			return []byte{}, err
