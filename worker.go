@@ -100,7 +100,7 @@ func (w *Worker) process(ctx context.Context, res resource) result {
 		}
 	}
 
-	pageInfo, err := parser.ParsePage(details.Body)
+	pageInfo, err := parser.ParsePage(res.u, details.Body)
 	if err != nil {
 		return result{
 			err: err,

@@ -13,7 +13,7 @@ type PageInfo struct {
 	Links []*url.URL
 }
 
-func ParsePage(input []byte) (*PageInfo, error) {
+func ParsePage(url *url.URL, input []byte) (*PageInfo, error) {
 	x, err := goquery.ParseString(string(input))
 	if err != nil {
 		return nil, err
@@ -22,13 +22,13 @@ func ParsePage(input []byte) (*PageInfo, error) {
 	return &PageInfo{
 		Body:  []byte(x.Text()),
 		Title: parseTitle(x),
-		Links: parseLinks(x),
+		Links: parseLinks(url, x),
 	}, nil
 }
 
-func parseLinks(x goquery.Nodes) (links []*url.URL) {
+func parseLinks(base *url.URL, x goquery.Nodes) (links []*url.URL) {
 	for _, href := range x.Find("a").Attrs("href") {
-		link, err := url.Parse(href)
+		link, err := base.Parse(href)
 		if err != nil {
 			continue
 		}
