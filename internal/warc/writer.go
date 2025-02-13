@@ -54,8 +54,6 @@ func (w *WarcWriter) dumpToFile() error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
-
 	buf := bufio.NewWriter(file)
 
 	n, err := io.Copy(buf, w.buff)
@@ -68,15 +66,22 @@ func (w *WarcWriter) dumpToFile() error {
 
 	if w.bytesSinceFlush >= w.maxFileSize {
 		file.Seek(0, 0)
-		if err := w.zip(file); err != nil {
-			return err
-		}
-		if err := os.Remove(w.currFile); err != nil {
-			return err
-		}
+
+		go func(filename string) {
+			defer file.Close()
+			if err := w.zip(filename, file); err != nil { //todo: improve error handling
+				return
+			}
+			if err := os.Remove(filename); err != nil {
+				return
+			}
+		}(w.currFile)
+
 		if err := w.reset(); err != nil {
 			return err
 		}
+	} else {
+		file.Close()
 	}
 	return nil
 }
@@ -96,11 +101,12 @@ func (w *WarcWriter) getFile() (*os.File, error) {
 	}
 }
 
-func (w *WarcWriter) zip(r io.Reader) error {
-	zipped, err := w.open(fmt.Sprintf("%s.gz", w.currFile))
+func (w *WarcWriter) zip(filename string, r io.Reader) error {
+	zipped, err := w.open(fmt.Sprintf("%s.gz", filename))
 	if err != nil {
 		return err
 	}
+	defer zipped.Close()
 	return writeGzip(r, zipped)
 }
 
