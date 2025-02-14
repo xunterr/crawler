@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/syndtr/goleveldb/leveldb"
-	"github.com/xunterr/crawler/internal/storage"
-	"github.com/xunterr/crawler/internal/storage/inmem"
+	"github.com/xunterr/aracno/internal/storage"
+	"github.com/xunterr/aracno/internal/storage/inmem"
 )
 
 type Frontier interface {

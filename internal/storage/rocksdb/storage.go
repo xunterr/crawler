@@ -5,7 +5,7 @@ import (
 	"encoding/gob"
 
 	"github.com/linxGnu/grocksdb"
-	"github.com/xunterr/crawler/internal/storage"
+	"github.com/xunterr/aracno/internal/storage"
 )
 
 type Encoder[T any] func(T) ([]byte, error)

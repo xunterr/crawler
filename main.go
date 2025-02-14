@@ -18,14 +18,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	boom "github.com/tylertreat/BoomFilters"
-	"github.com/xunterr/crawler/internal/dht"
-	"github.com/xunterr/crawler/internal/fetcher"
-	"github.com/xunterr/crawler/internal/frontier"
-	p2p "github.com/xunterr/crawler/internal/net"
-	"github.com/xunterr/crawler/internal/storage"
-	"github.com/xunterr/crawler/internal/storage/inmem"
-	"github.com/xunterr/crawler/internal/storage/rocksdb"
-	"github.com/xunterr/crawler/internal/warc"
+	"github.com/xunterr/aracno/internal/dht"
+	"github.com/xunterr/aracno/internal/fetcher"
+	"github.com/xunterr/aracno/internal/frontier"
+	p2p "github.com/xunterr/aracno/internal/net"
+	"github.com/xunterr/aracno/internal/storage"
+	"github.com/xunterr/aracno/internal/storage/inmem"
+	"github.com/xunterr/aracno/internal/storage/rocksdb"
+	"github.com/xunterr/aracno/internal/warc"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -293,7 +293,7 @@ func decode(data []byte) (*boom.ScalableBloomFilter, error) {
 
 func getDbOpts() *grocksdb.Options {
 	bbto := grocksdb.NewDefaultBlockBasedTableOptions()
-	bbto.SetBlockCache(grocksdb.NewLRUCache(3 << 30))
+	bbto.SetBlockCache(grocksdb.NewLRUCache(5 << 30))
 	opts := grocksdb.NewDefaultOptions()
 	opts.SetBlockBasedTableFactory(bbto)
 	opts.SetCreateIfMissing(true)

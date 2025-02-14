@@ -5,7 +5,7 @@ import (
 	"math/big"
 	"time"
 
-	p2p "github.com/xunterr/crawler/internal/net"
+	p2p "github.com/xunterr/aracno/internal/net"
 	"go.uber.org/zap"
 )
 

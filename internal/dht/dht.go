@@ -7,8 +7,8 @@ import (
 	"net"
 	"sync"
 
-	p2p "github.com/xunterr/crawler/internal/net"
-	pb "github.com/xunterr/crawler/proto"
+	p2p "github.com/xunterr/aracno/internal/net"
+	pb "github.com/xunterr/aracno/proto"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )

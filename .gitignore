@@ -1,8 +1,7 @@
-crawler
+aracno
 venv/*
 metrics.*
 *.csv
 log*
 *.png
 data/*
-prometheus/

@@ -1,7 +1,7 @@
 package inmem
 
 import (
-	"github.com/xunterr/crawler/internal/storage"
+	"github.com/xunterr/aracno/internal/storage"
 )
 
 type SlidingStorage[V any] struct {

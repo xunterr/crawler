@@ -6,7 +6,7 @@ import (
 	"sync"
 
 	boom "github.com/tylertreat/BoomFilters"
-	"github.com/xunterr/crawler/internal/storage"
+	"github.com/xunterr/aracno/internal/storage"
 )
 
 type BloomStorage storage.Storage[*boom.ScalableBloomFilter]

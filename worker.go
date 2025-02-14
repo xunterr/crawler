@@ -10,9 +10,9 @@ import (
 
 	"github.com/jimsmart/grobotstxt"
 	warcparser "github.com/slyrz/warc"
-	"github.com/xunterr/crawler/internal/fetcher"
-	"github.com/xunterr/crawler/internal/parser"
-	"github.com/xunterr/crawler/internal/warc"
+	"github.com/xunterr/aracno/internal/fetcher"
+	"github.com/xunterr/aracno/internal/parser"
+	"github.com/xunterr/aracno/internal/warc"
 )
 
 type resource struct {

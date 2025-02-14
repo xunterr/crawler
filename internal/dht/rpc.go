@@ -4,8 +4,8 @@ import (
 	"errors"
 	"net"
 
-	p2p "github.com/xunterr/crawler/internal/net"
-	pb "github.com/xunterr/crawler/proto"
+	p2p "github.com/xunterr/aracno/internal/net"
+	pb "github.com/xunterr/aracno/proto"
 	"google.golang.org/protobuf/proto"
 )
 

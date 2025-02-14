@@ -1,6 +1,6 @@
 package inmem
 
-import "github.com/xunterr/crawler/internal/storage"
+import "github.com/xunterr/aracno/internal/storage"
 
 type InMemoryQueue[T any] []T
 

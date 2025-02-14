@@ -1,4 +1,4 @@
-module github.com/xunterr/crawler
+module github.com/xunterr/aracno
 
 go 1.22.5
 

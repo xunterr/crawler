@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xunterr/crawler/internal/dht"
-	p2p "github.com/xunterr/crawler/internal/net"
-	pb "github.com/xunterr/crawler/proto"
+	"github.com/xunterr/aracno/internal/dht"
+	p2p "github.com/xunterr/aracno/internal/net"
+	pb "github.com/xunterr/aracno/proto"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/protobuf/proto"

@@ -3,7 +3,7 @@ package inmem
 import (
 	"sync"
 
-	"github.com/xunterr/crawler/internal/storage"
+	"github.com/xunterr/aracno/internal/storage"
 )
 
 type InMemoryStorage[V any] struct {
